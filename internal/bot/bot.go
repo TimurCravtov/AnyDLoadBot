@@ -81,7 +81,15 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 
 	api, err := tgbot.New(token, append([]tgbot.Option{
 		tgbot.WithDefaultHandler(b.handleDefault),
-		tgbot.WithErrorsHandler(func(err error) { log.Error("telegram client error", "err", err) }),
+		tgbot.WithErrorsHandler(func(err error) {
+			if strings.Contains(err.Error(), "Conflict") {
+				// Telegram allows one poller per token: a second instance (a local run
+				// next to the server, say) makes both fight and drop updates.
+				log.Error("telegram client error", "err", err, "hint", "another instance is polling with this bot token; stop it")
+				return
+			}
+			log.Error("telegram client error", "err", err)
+		}),
 		tgbot.WithMiddlewares(b.logUpdates),
 		// Be explicit: if omitted, Telegram silently reuses whatever list was last
 		// set for this token, which can hide inline updates.
