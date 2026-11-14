@@ -151,7 +151,7 @@ func newServerBot(t *testing.T, p downloader.Provider) (*Bot, *fakeTelegram) {
 
 	b, err := New("TOKEN", downloader.NewRegistry(p), newTestBot().log,
 		WithStorageChat(storageChat),
-		withAPIOptions(tgbot.WithServerURL(srv.URL), tgbot.WithSkipGetMe()),
+		withAPIOptions(tgbot.WithServerURL(srv.URL), tgbot.WithSkipGetMe(), tgbot.WithNotAsyncHandlers()),
 	)
 	if err != nil {
 		t.Fatal(err)

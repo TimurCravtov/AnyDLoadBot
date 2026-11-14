@@ -29,15 +29,11 @@ func (b *Bot) supported() string {
 }
 
 func (b *Bot) handleStart(ctx context.Context, api *tgbot.Bot, u *models.Update) {
-	b.reply(ctx, api, u, "Hi! Send me a link and I'll send the video or image back.\nSupported sites: "+b.supported()+"\n\nUse /help for more info.")
+	b.reply(ctx, api, u, b.startText())
 }
 
 func (b *Bot) handleHelp(ctx context.Context, api *tgbot.Bot, u *models.Update) {
-	text := "Send me a link to a video or image and I'll download it.\nSupported sites: " + b.supported() +
-		"\n\nAdd \"mp3\" after a link to get just the audio (" + b.audioSites() + ")." +
-		"\n\nInline: type my @username followed by a link in any chat." +
-		"\n\n/start - greeting\n/help - this message"
-	b.reply(ctx, api, u, text)
+	b.send(ctx, api, u, b.helpText(), models.ParseModeHTML)
 }
 
 // handleDefault handles every non-command message: it looks for a link that a
@@ -142,12 +138,18 @@ func truncate(s string, maxRunes int) string {
 
 // reply sends text to the chat the update came from. Updates without a message are ignored.
 func (b *Bot) reply(ctx context.Context, api *tgbot.Bot, u *models.Update, text string) {
+	b.send(ctx, api, u, text, "")
+}
+
+// send is reply with an optional parse mode (e.g. HTML).
+func (b *Bot) send(ctx context.Context, api *tgbot.Bot, u *models.Update, text string, mode models.ParseMode) {
 	if u.Message == nil {
 		return
 	}
 	_, err := api.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: u.Message.Chat.ID,
-		Text:   text,
+		ChatID:    u.Message.Chat.ID,
+		Text:      text,
+		ParseMode: mode,
 	})
 	if err != nil {
 		b.log.Error("send message", "chat_id", u.Message.Chat.ID, "err", err)

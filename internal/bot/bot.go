@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -19,6 +20,7 @@ type Bot struct {
 	providers     *downloader.Registry
 	storageChatID int64
 	files         *fileCache
+	username      string // set once in Run, before polling starts
 }
 
 // Option configures a Bot.
@@ -73,8 +75,8 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 	}
 	b.api = api
 
-	api.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypeCommand, b.handleStart)
-	api.RegisterHandler(tgbot.HandlerTypeMessageText, "/help", tgbot.MatchTypeCommand, b.handleHelp)
+	api.RegisterHandlerMatchFunc(isCommand("start"), b.handleStart)
+	api.RegisterHandlerMatchFunc(isCommand("help"), b.handleHelp)
 	api.RegisterHandlerMatchFunc(isInlineQuery, b.handleInline)
 	api.RegisterHandlerMatchFunc(isChosenInlineResult, b.handleChosenInline)
 
@@ -101,6 +103,39 @@ func (b *Bot) logUpdates(next tgbot.HandlerFunc) tgbot.HandlerFunc {
 	}
 }
 
+// isCommand matches a message that starts with /name, also in the group form
+// /name@botname. The library's own command matcher wants the name without the
+// slash and doesn't understand the @botname suffix.
+func isCommand(name string) tgbot.MatchFunc {
+	return func(u *models.Update) bool {
+		m := u.Message
+		if m == nil {
+			return false
+		}
+		for _, e := range m.Entities {
+			if e.Type != models.MessageEntityTypeBotCommand || e.Offset != 0 || e.Length < 2 || e.Length > len(m.Text) {
+				continue
+			}
+			cmd, _, _ := strings.Cut(m.Text[1:e.Length], "@")
+			return strings.EqualFold(cmd, name)
+		}
+		return false
+	}
+}
+
+// loadUsername fetches the bot's @username so /help can show how to use inline mode.
+func (b *Bot) loadUsername(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, editTimeout)
+	defer cancel()
+
+	me, err := b.api.GetMe(ctx)
+	if err != nil {
+		b.log.Warn("could not fetch bot username; /help will use a placeholder", "err", err)
+		return
+	}
+	b.username = me.Username
+}
+
 // checkStorageChat warns at startup if the storage chat can't be reached, so a
 // wrong STORAGE_CHAT_ID shows up right away instead of on a user's first pick.
 func (b *Bot) checkStorageChat(ctx context.Context) {
@@ -122,6 +157,7 @@ func (b *Bot) checkStorageChat(ctx context.Context) {
 
 // Run starts long polling and blocks until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) {
+	b.loadUsername(ctx)
 	b.checkStorageChat(ctx)
 	b.log.Info("bot started")
 	b.api.Start(ctx)
