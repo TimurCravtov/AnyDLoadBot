@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 BIN := bin/bot
 
-.PHONY: help build run test lint fmt tidy docker
+.PHONY: help build run test lint fmt tidy docker docker-run
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-8s %s\n", $$1, $$2}'
@@ -26,3 +26,6 @@ tidy: ## Tidy go.mod
 
 docker: ## Build the Docker image
 	docker build -t anydloadbot .
+
+docker-run: ## Run the image, passing env vars from .env
+	docker run --rm --init --env-file .env --name anydloadbot anydloadbot
