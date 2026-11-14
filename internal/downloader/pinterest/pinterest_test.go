@@ -75,6 +75,29 @@ func TestParseVideoURL(t *testing.T) {
 	}
 }
 
+func TestParseThumbnailURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		page string
+		want string
+	}{
+		{
+			name: "prefers video thumbnail",
+			page: `"https://i.pinimg.com/236x/aa/bb.jpg" "https://i.pinimg.com/videos/thumbnails/originals/dd/52/x.0000000.jpg"`,
+			want: "https://i.pinimg.com/videos/thumbnails/originals/dd/52/x.0000000.jpg",
+		},
+		{name: "falls back to any jpeg", page: `"https://i.pinimg.com/236x/aa/bb.jpg"`, want: "https://i.pinimg.com/236x/aa/bb.jpg"},
+		{name: "ignores non-jpeg and other hosts", page: `https://i.pinimg.com/a.webp https://evil.com/a.jpg`, want: ""},
+	}
+	for _, tt := range tests {
+		if got := ParseThumbnailURL([]byte(tt.page)); got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestDownloadRejectsForeignLinks(t *testing.T) {
 	t.Parallel()
 

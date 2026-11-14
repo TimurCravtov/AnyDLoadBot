@@ -16,12 +16,15 @@ var (
 	ErrNoMedia = errors.New("no downloadable media found")
 	// ErrTooLarge means the media exceeds MaxSize.
 	ErrTooLarge = errors.New("media is too large")
+	// ErrTooLong means the media runs longer than the provider allows.
+	ErrTooLong = errors.New("media is too long")
 )
 
 // Media is a downloaded file ready to be sent to the user.
 type Media struct {
 	Filename string
 	Data     []byte
+	Title    string // optional; used as the caption
 }
 
 // Provider downloads media from one website. Implementations must be safe for
@@ -34,6 +37,40 @@ type Provider interface {
 	// Download fetches the media behind a link returned by FindURL.
 	// It returns ErrNoMedia or ErrTooLarge for expected failures.
 	Download(ctx context.Context, link string) (*Media, error)
+}
+
+// Source describes media that Telegram can fetch itself from a direct URL.
+type Source struct {
+	URL          string
+	ThumbnailURL string // JPEG preview, required by Telegram for inline videos
+	Title        string
+	MimeType     string // e.g. "video/mp4"
+}
+
+// Resolver is implemented by providers whose media has a direct, publicly
+// fetchable URL. Inline mode needs this: Telegram downloads the file itself,
+// so the bot only has to answer with a URL instead of uploading bytes.
+type Resolver interface {
+	// Resolve finds the direct media URL behind a link returned by FindURL.
+	// It returns ErrNoMedia for expected failures.
+	Resolve(ctx context.Context, link string) (*Source, error)
+}
+
+// Preview is a cheap placeholder shown in inline mode while the real media is
+// still being downloaded.
+type Preview struct {
+	ThumbnailURL string // public JPEG
+	Title        string
+	Description  string // optional second line, e.g. the channel name
+}
+
+// Previewer is implemented by providers that have no direct media URL (so they
+// can't be a Resolver) but can still offer a placeholder for inline mode.
+// Inline queries must be answered within seconds, so Preview has to be fast:
+// at most one quick request, and it should fall back to generic text instead
+// of failing when that request doesn't work out.
+type Previewer interface {
+	Preview(ctx context.Context, link string) (*Preview, bool)
 }
 
 // Registry holds the enabled providers and routes messages to them.
