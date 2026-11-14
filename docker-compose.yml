@@ -16,11 +16,16 @@ services:
       MAX_TOTAL_DOWNLOADS: ${MAX_TOTAL_DOWNLOADS:-100}
       # yt-dlp's traffic goes through the warp service below.
       YTDLP_PROXY: ${YTDLP_PROXY:-socks5://warp:1080}
-      # Optional cookies.txt paths inside the container (Coolify: add a file under
-      # Storages and set these to its mount path). Empty means "not used".
+      # Optional cookies.txt paths inside the container (needs a volume added to
+      # this file). Empty means "not used".
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}
       INSTAGRAM_COOKIES: ${INSTAGRAM_COOKIES:-}
       REDDIT_COOKIES: ${REDDIT_COOKIES:-}
+      # Or the cookies.txt contents, base64-encoded, so no file mount is needed
+      # (Coolify: add as a secret environment variable). Use one form, not both.
+      YTDLP_COOKIES_B64: ${YTDLP_COOKIES_B64:-}
+      INSTAGRAM_COOKIES_B64: ${INSTAGRAM_COOKIES_B64:-}
+      REDDIT_COOKIES_B64: ${REDDIT_COOKIES_B64:-}
     depends_on:
       warp:
         condition: service_healthy

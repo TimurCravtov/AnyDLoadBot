@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -43,6 +44,25 @@ type Config struct {
 	// StorageChatID is a private chat the bot uploads videos to for inline mode
 	// (0 = disabled). See bot.WithStorageChat.
 	StorageChatID int64
+
+	// inlineCookies holds decoded NAME_B64 cookie settings until Load writes
+	// them to files; indexed like cookieSettings.
+	inlineCookies [numCookieSettings]string
+}
+
+const numCookieSettings = 3
+
+// cookieSettings are the cookies.txt settings. Each is a path (NAME) or, where
+// mounting a file is awkward (Coolify compose apps, for one), the file's
+// base64-encoded contents (NAME_B64). Base64 keeps the file's tabs and line
+// breaks intact inside an environment variable.
+var cookieSettings = [numCookieSettings]struct {
+	env  string
+	path func(*Config) *string
+}{
+	{"YTDLP_COOKIES", func(c *Config) *string { return &c.YtDlpCookies }},
+	{"INSTAGRAM_COOKIES", func(c *Config) *string { return &c.InstagramCookies }},
+	{"REDDIT_COOKIES", func(c *Config) *string { return &c.RedditCookies }},
 }
 
 // Load reads configuration from environment variables, first loading a .env
@@ -57,23 +77,55 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+
+	// Inline (base64) cookies go into private temporary files, so the rest of
+	// the bot only ever deals with paths. (Done here, not in load, to keep load pure.)
+	for i, s := range cookieSettings {
+		if cfg.inlineCookies[i] == "" {
+			continue
+		}
+		path, err := writePrivateFile(cfg.inlineCookies[i])
+		if err != nil {
+			return Config{}, fmt.Errorf("%s_B64: %w", s.env, err)
+		}
+		*s.path(&cfg) = path
+		cfg.inlineCookies[i] = ""
+	}
+
 	// A cookies path that doesn't exist would otherwise only show up as failing
-	// downloads, so fail at startup. (Checked here, not in load, to keep load pure.)
+	// downloads, so fail at startup.
 	var errs []error
-	for name, path := range map[string]string{
-		"YTDLP_COOKIES": cfg.YtDlpCookies, "INSTAGRAM_COOKIES": cfg.InstagramCookies, "REDDIT_COOKIES": cfg.RedditCookies,
-	} {
+	for _, s := range cookieSettings {
+		path := *s.path(&cfg)
 		if path == "" {
 			continue
 		}
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
-			errs = append(errs, fmt.Errorf("%s: %q is not a readable file", name, path))
+			errs = append(errs, fmt.Errorf("%s: %q is not a readable file", s.env, path))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// writePrivateFile stores data in a new temporary file readable only by this
+// process's user and returns its path.
+func writePrivateFile(data string) (string, error) {
+	f, err := os.CreateTemp("", "cookies-*.txt") // created with mode 0600
+	if err != nil {
+		return "", err
+	}
+	_, werr := f.WriteString(data)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+		return "", werr
+	}
+	return f.Name(), nil
 }
 
 func load(getenv func(string) string) (Config, error) {
@@ -117,7 +169,26 @@ func load(getenv func(string) string) (Config, error) {
 		}
 	}
 
-	cfg.YtDlpCookies = strings.TrimSpace(getenv("YTDLP_COOKIES"))
+	for i, s := range cookieSettings {
+		path := strings.TrimSpace(getenv(s.env))
+		// Base64 may arrive wrapped over several lines; whitespace is never part of it.
+		b64 := strings.Join(strings.Fields(getenv(s.env+"_B64")), "")
+		switch {
+		case path != "" && b64 != "":
+			errs = append(errs, fmt.Errorf("set either %s or %s_B64, not both", s.env, s.env))
+		case b64 != "":
+			data, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil || len(data) == 0 {
+				// Never echo the value: it is a secret.
+				errs = append(errs, fmt.Errorf("%s_B64: not a valid base64-encoded cookies file", s.env))
+				continue
+			}
+			cfg.inlineCookies[i] = string(data)
+		default:
+			*s.path(&cfg) = path
+		}
+	}
+
 	if v := strings.TrimSpace(getenv("YTDLP_PROXY")); v != "" {
 		if u, err := url.Parse(v); err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks4", "socks5", "socks5h"}, u.Scheme) {
 			errs = append(errs, errors.New("YTDLP_PROXY: must look like http://host:port or socks5://host:port"))
@@ -125,8 +196,6 @@ func load(getenv func(string) string) (Config, error) {
 			cfg.YtDlpProxy = v
 		}
 	}
-	cfg.InstagramCookies = strings.TrimSpace(getenv("INSTAGRAM_COOKIES"))
-	cfg.RedditCookies = strings.TrimSpace(getenv("REDDIT_COOKIES"))
 
 	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)

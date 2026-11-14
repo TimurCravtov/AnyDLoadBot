@@ -1,9 +1,11 @@
 package config
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,5 +88,74 @@ func TestLoadRejectsMissingCookiesFile(t *testing.T) {
 	}
 	if cfg.YtDlpCookies != cookies {
 		t.Errorf("YtDlpCookies = %q", cfg.YtDlpCookies)
+	}
+}
+
+func TestLoadCookiesBase64(t *testing.T) {
+	t.Parallel()
+
+	const cookies = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret\n"
+	b64 := base64.StdEncoding.EncodeToString([]byte(cookies))
+	// Line-wrapped base64 (as some tools produce) must work too.
+	wrapped := b64[:10] + "\n" + b64[10:20] + " " + b64[20:]
+
+	got, err := load(env(map[string]string{"BOT_TOKEN": "t", "YTDLP_COOKIES_B64": wrapped, "REDDIT_COOKIES_B64": b64}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.inlineCookies[0] != cookies || got.inlineCookies[2] != cookies || got.inlineCookies[1] != "" {
+		t.Errorf("inline cookies = %q", got.inlineCookies)
+	}
+	if got.YtDlpCookies != "" {
+		t.Errorf("YtDlpCookies = %q before Load writes the file", got.YtDlpCookies)
+	}
+}
+
+func TestLoadCookiesBase64Errors(t *testing.T) {
+	t.Parallel()
+
+	b64 := base64.StdEncoding.EncodeToString([]byte("cookies"))
+	tests := map[string]map[string]string{
+		"both forms":  {"BOT_TOKEN": "t", "YTDLP_COOKIES": "/c.txt", "YTDLP_COOKIES_B64": b64},
+		"not base64":  {"BOT_TOKEN": "t", "INSTAGRAM_COOKIES_B64": "%%%not-base64-SECRETVALUE%%%"},
+		"empty value": {"BOT_TOKEN": "t", "REDDIT_COOKIES_B64": "===="},
+	}
+	for name, e := range tests {
+		_, err := load(env(e))
+		if err == nil {
+			t.Errorf("%s: no error", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "SECRETVALUE") {
+			t.Errorf("%s: error leaks the value: %v", name, err)
+		}
+	}
+}
+
+func TestLoadWritesBase64CookiesToPrivateFile(t *testing.T) {
+	// Not parallel: it changes the process environment and working directory.
+	dir := t.TempDir()
+	t.Chdir(dir) // no .env here
+	const cookies = "# Netscape HTTP Cookie File\n.tiktok.com\tTRUE\t/\tTRUE\t0\tsid\tx\n"
+	t.Setenv("BOT_TOKEN", "123:abc")
+	t.Setenv("YTDLP_COOKIES_B64", base64.StdEncoding.EncodeToString([]byte(cookies)))
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(cfg.YtDlpCookies) })
+
+	data, err := os.ReadFile(cfg.YtDlpCookies)
+	if err != nil || string(data) != cookies {
+		t.Fatalf("cookies file %q = %q, %v", cfg.YtDlpCookies, data, err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(cfg.YtDlpCookies); info.Mode().Perm() != 0o600 {
+			t.Errorf("cookies file mode = %v, want 0600", info.Mode().Perm())
+		}
+	}
+	if cfg.inlineCookies != ([numCookieSettings]string{}) {
+		t.Error("decoded cookies were kept in memory after writing the file")
 	}
 }
