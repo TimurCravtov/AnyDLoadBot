@@ -164,7 +164,7 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 		return nil, err
 	}
 
-	data, err := p.fetch.Get(ctx, src.URL, downloader.MaxSize, src.MimeType)
+	data, err := p.fetch.GetMedia(ctx, src.URL, downloader.MaxSize, src.MimeType)
 	if err != nil {
 		return nil, fmt.Errorf("download video: %w", err)
 	}

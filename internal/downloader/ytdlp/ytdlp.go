@@ -3,15 +3,19 @@
 package ytdlp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 
 	"anydloadbot/internal/downloader"
 )
@@ -149,10 +153,29 @@ func copyCookies(args []string) (out []string, cleanup func(), err error) {
 
 func execRunner(bin string) Runner {
 	return func(ctx context.Context, args ...string) ([]byte, error) {
-		var stdout, stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, bin, args...)
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
+		outPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		errPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+
+		// Read both streams while yt-dlp runs, so progress is reported live.
+		// (Where yt-dlp prints progress depends on its quiet mode, so check both.)
+		var stdout, stderr bytes.Buffer
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); scanOutput(ctx, outPipe, &stdout) }()
+		go func() { defer wg.Done(); scanOutput(ctx, errPipe, &stderr) }()
+		wg.Wait() // the pipes must be drained before Wait
+
+		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -230,9 +253,10 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 	defer os.RemoveAll(dir)
 
 	args := []string{
-		"--no-playlist", "--no-warnings", "--no-progress", "--no-mtime", "--restrict-filenames",
+		"--no-playlist", "--no-warnings", "--no-mtime", "--restrict-filenames",
 		"--max-filesize", "50M",
 	}
+	args = append(args, progressArgs...)
 	if req.Audio {
 		args = append(args,
 			"-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "192K",
@@ -285,6 +309,71 @@ func Classify(err error) error {
 		}
 	}
 	return err
+}
+
+// Progress lines yt-dlp prints for us; see the --progress-template arguments in Fetch.
+const (
+	progressPrefix = "anydl-progress:"
+	processPrefix  = "anydl-pp:"
+)
+
+// progressArgs make yt-dlp print one machine-readable line per progress update.
+var progressArgs = []string{
+	"--progress", "--newline",
+	"--progress-template", "download:" + progressPrefix + "%(progress.downloaded_bytes)s:%(progress.total_bytes)s:%(progress.total_bytes_estimate)s",
+	"--progress-template", "postprocess:" + processPrefix + "%(progress.status)s",
+}
+
+// scanOutput reads yt-dlp's output line by line: progress lines become
+// progress reports, everything else is kept in keep. Lines may end in \n or \r.
+func scanOutput(ctx context.Context, r io.Reader, keep *bytes.Buffer) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 64<<20) // --dump-single-json prints one long line
+	sc.Split(scanLines)
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case strings.HasPrefix(line, progressPrefix):
+			parts := strings.Split(strings.TrimPrefix(line, progressPrefix), ":")
+			if len(parts) != 3 {
+				continue
+			}
+			total := parseCount(parts[1])
+			if total == 0 {
+				total = parseCount(parts[2]) // an estimate is better than nothing
+			}
+			downloader.Report(ctx, downloader.Progress{Stage: downloader.StageDownloading, Done: parseCount(parts[0]), Total: total})
+		case strings.HasPrefix(line, processPrefix):
+			downloader.Report(ctx, downloader.Progress{Stage: downloader.StageProcessing})
+		default:
+			keep.WriteString(line)
+			keep.WriteByte('\n')
+		}
+	}
+	_, _ = io.Copy(io.Discard, r) // drain anything left after a scanner error
+}
+
+// scanLines is bufio.ScanLines that also splits on a bare \r.
+func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, c := range data {
+		if c == '\n' || c == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// parseCount parses a byte count from a progress template; "NA" and anything
+// else unparsable is 0. yt-dlp may print estimates with a fraction.
+func parseCount(s string) int64 {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || f < 0 {
+		return 0
+	}
+	return int64(f)
 }
 
 func lastLine(b []byte) string {

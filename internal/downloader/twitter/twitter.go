@@ -190,7 +190,7 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 		return nil, err
 	}
 
-	data, err := p.fetch.Get(ctx, src.URL, downloader.MaxSize, "*/*")
+	data, err := p.fetch.GetMedia(ctx, src.URL, downloader.MaxSize, "*/*")
 	if err != nil {
 		return nil, fmt.Errorf("download media: %w", err)
 	}

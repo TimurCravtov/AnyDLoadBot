@@ -211,7 +211,7 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 
 // image downloads the post's picture (the first one, for carousels).
 func (p *Provider) image(ctx context.Context, id string) (*downloader.Media, error) {
-	data, err := p.fetch.Get(ctx, p.mediaURL(id), downloader.MaxSize, "image/jpeg")
+	data, err := p.fetch.GetMedia(ctx, p.mediaURL(id), downloader.MaxSize, "image/jpeg")
 	if err != nil {
 		return nil, fmt.Errorf("%w: image: %v", downloader.ErrNoMedia, err)
 	}

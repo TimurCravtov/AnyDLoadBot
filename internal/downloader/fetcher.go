@@ -124,6 +124,17 @@ func (f *Fetcher) FinalURL(ctx context.Context, rawURL string) (string, error) {
 // Get fetches rawURL and reads at most limit bytes; larger bodies yield ErrTooLarge.
 // accept is the preferred media type, e.g. "text/html" or "video/mp4".
 func (f *Fetcher) Get(ctx context.Context, rawURL string, limit int64, accept string) ([]byte, error) {
+	return f.get(ctx, rawURL, limit, accept, false)
+}
+
+// GetMedia is Get for the media file itself: it reports download progress
+// (see WithProgress). Pages and API responses use Get, so they don't show up
+// as a download.
+func (f *Fetcher) GetMedia(ctx context.Context, rawURL string, limit int64, accept string) ([]byte, error) {
+	return f.get(ctx, rawURL, limit, accept, true)
+}
+
+func (f *Fetcher) get(ctx context.Context, rawURL string, limit int64, accept string, report bool) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -145,7 +156,11 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, limit int64, accept st
 		return nil, ErrTooLarge
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	var body io.Reader = resp.Body
+	if report {
+		body = &progressReader{ctx: ctx, r: resp.Body, total: max(resp.ContentLength, 0)}
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return nil, err
 	}
