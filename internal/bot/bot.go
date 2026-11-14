@@ -20,15 +20,29 @@ type Bot struct {
 	providers     *downloader.Registry
 	storageChatID int64
 	files         *fileCache
+	jobs          *jobs
 	username      string // set once in Run, before polling starts
 }
+
+// Default concurrent-download limits.
+const (
+	DefaultUserLimit  = 5
+	DefaultTotalLimit = 100
+)
 
 // Option configures a Bot.
 type Option func(*options)
 
 type options struct {
-	storageChatID int64
-	api           []tgbot.Option
+	storageChatID     int64
+	maxUser, maxTotal int
+	api               []tgbot.Option
+}
+
+// WithLimits caps how many downloads may run at once: per user, and across the
+// whole bot. Values <= 0 keep the defaults.
+func WithLimits(perUser, total int) Option {
+	return func(o *options) { o.maxUser, o.maxTotal = perUser, total }
 }
 
 // WithStorageChat sets the private chat the bot uploads downloaded videos to.
@@ -50,12 +64,19 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if o.maxUser <= 0 {
+		o.maxUser = DefaultUserLimit
+	}
+	if o.maxTotal <= 0 {
+		o.maxTotal = DefaultTotalLimit
+	}
 
 	b := &Bot{
 		log:           log,
 		providers:     providers,
 		storageChatID: o.storageChatID,
 		files:         newFileCache(maxCachedFiles),
+		jobs:          newJobs(o.maxUser, o.maxTotal),
 	}
 
 	api, err := tgbot.New(token, append([]tgbot.Option{
@@ -68,6 +89,7 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 			models.AllowedUpdateMessage,
 			models.AllowedUpdateInlineQuery,
 			models.AllowedUpdateChosenInlineResult,
+			models.AllowedUpdateCallbackQuery,
 		}),
 	}, o.api...)...)
 	if err != nil {
@@ -77,6 +99,8 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 
 	api.RegisterHandlerMatchFunc(isCommand("start"), b.handleStart)
 	api.RegisterHandlerMatchFunc(isCommand("help"), b.handleHelp)
+	api.RegisterHandlerMatchFunc(isCommand("cancel"), b.handleCancel)
+	api.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, cancelData, tgbot.MatchTypeExact, b.handleCancelButton)
 	api.RegisterHandlerMatchFunc(isInlineQuery, b.handleInline)
 	api.RegisterHandlerMatchFunc(isChosenInlineResult, b.handleChosenInline)
 
@@ -97,6 +121,8 @@ func (b *Bot) logUpdates(next tgbot.HandlerFunc) tgbot.HandlerFunc {
 			kind = "inline_query"
 		case u.ChosenInlineResult != nil:
 			kind = "chosen_inline_result"
+		case u.CallbackQuery != nil:
+			kind = "callback_query"
 		}
 		b.log.Debug("update received", "kind", kind, "update_id", u.ID)
 		next(ctx, api, u)

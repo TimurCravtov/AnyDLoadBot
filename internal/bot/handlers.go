@@ -63,11 +63,28 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	}
 
 	chatID := u.Message.Chat.ID
-	log := b.log.With("chat_id", chatID, "provider", provider.Name(), "link", link, "audio", audio)
+	userID := senderID(u.Message)
+	log := b.log.With("chat_id", chatID, "user_id", userID, "provider", provider.Name(), "link", link, "audio", audio)
+
+	job, err := b.jobs.start(ctx, userID)
+	if err != nil {
+		log.Warn("download refused", "reason", err)
+		b.reply(ctx, api, u, b.limitText(err))
+		return
+	}
+	defer job.finish()
 	log.Info("download requested")
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	// The status message has a Cancel button; it goes away (or turns into
+	// "Cancelled") once the download is over.
+	parent := ctx
+	if status := b.sendStatus(ctx, api, chatID, u.Message.ID); status != 0 {
+		job.setKey(chatKey(chatID, status))
+		defer func() { b.endStatus(parent, api, chatID, status, job.wasCancelled()) }()
+	}
+
+	ctx, cancel := context.WithTimeout(job.ctx, downloadTimeout)
 	defer cancel()
 
 	action := models.ChatActionUploadVideo
@@ -78,6 +95,10 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 
 	media, err := download(ctx, link)
 	if err != nil {
+		if job.wasCancelled() {
+			log.Info("download cancelled by the user")
+			return
+		}
 		text, unexpected := failureText(err)
 		if unexpected {
 			log.Error("download failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
@@ -89,6 +110,10 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	}
 
 	if err := b.sendMedia(ctx, api, chatID, u.Message.ID, media); err != nil {
+		if job.wasCancelled() {
+			log.Info("upload cancelled by the user")
+			return
+		}
 		log.Error("send media", "err", err)
 		b.reply(ctx, api, u, downloadFailed)
 		return

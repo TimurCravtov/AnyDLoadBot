@@ -74,8 +74,9 @@ func (p *slowProvider) DownloadAudio(context.Context, string) (*downloader.Media
 
 // fakeTelegram records Bot API calls and answers like Telegram would.
 type fakeTelegram struct {
-	mu    sync.Mutex
-	calls []fakeCall
+	mu     sync.Mutex
+	calls  []fakeCall
+	msgIDs int
 }
 
 type fakeCall struct {
@@ -112,6 +113,8 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch call.method {
 	case "sendVideo":
 		fmt.Fprintf(w, `{"ok":true,"result":{%s,"video":{"file_id":%q,"file_unique_id":"u","width":1,"height":1,"duration":1}}}`, chat, fakeFileID)
+	case "sendMessage":
+		fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d,"date":0,"chat":{"id":5,"type":"private"},"text":"x"}}`, f.nextMessageID())
 	case "sendAudio":
 		fmt.Fprintf(w, `{"ok":true,"result":{%s,"audio":{"file_id":%q,"file_unique_id":"u","duration":1}}}`, chat, fakeFileID)
 	case "sendPhoto":
@@ -119,6 +122,14 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}
+}
+
+// nextMessageID hands out message IDs for sendMessage, starting at 100.
+func (f *fakeTelegram) nextMessageID() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.msgIDs++
+	return 99 + f.msgIDs
 }
 
 func (f *fakeTelegram) methods() []string {
@@ -142,17 +153,18 @@ func (f *fakeTelegram) call(method string) (fakeCall, bool) {
 	return fakeCall{}, false
 }
 
-func newServerBot(t *testing.T, p downloader.Provider) (*Bot, *fakeTelegram) {
+func newServerBot(t *testing.T, p downloader.Provider, extra ...Option) (*Bot, *fakeTelegram) {
 	t.Helper()
 
 	tg := &fakeTelegram{}
 	srv := httptest.NewServer(tg)
 	t.Cleanup(srv.Close)
 
-	b, err := New("TOKEN", downloader.NewRegistry(p), newTestBot().log,
+	opts := append([]Option{
 		WithStorageChat(storageChat),
 		withAPIOptions(tgbot.WithServerURL(srv.URL), tgbot.WithSkipGetMe(), tgbot.WithNotAsyncHandlers()),
-	)
+	}, extra...)
+	b, err := New("TOKEN", downloader.NewRegistry(p), newTestBot().log, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,10 +356,10 @@ func TestChatSendsByKind(t *testing.T) {
 		prov downloader.Provider
 		want string
 	}{
-		{"video", "slow://abc", &slowProvider{}, "sendChatAction,sendVideo"},
-		{"mp3 keyword", "slow://abc mp3", &slowProvider{}, "sendChatAction,sendAudio"},
-		{"MP3 uppercase before link", "MP3 slow://abc", &slowProvider{}, "sendChatAction,sendAudio"},
-		{"photo", "photo://x", &photoProvider{}, "sendChatAction,sendPhoto"},
+		{"video", "slow://abc", &slowProvider{}, "sendMessage,sendChatAction,sendVideo,deleteMessage"},
+		{"mp3 keyword", "slow://abc mp3", &slowProvider{}, "sendMessage,sendChatAction,sendAudio,deleteMessage"},
+		{"MP3 uppercase before link", "MP3 slow://abc", &slowProvider{}, "sendMessage,sendChatAction,sendAudio,deleteMessage"},
+		{"photo", "photo://x", &photoProvider{}, "sendMessage,sendChatAction,sendPhoto,deleteMessage"},
 		{"mp3 unsupported", "photo://x mp3", &photoProvider{}, "sendMessage"},
 	}
 	for _, tt := range tests {

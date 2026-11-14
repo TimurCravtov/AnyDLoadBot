@@ -50,9 +50,9 @@ func (b *Bot) helpText() string {
 	}
 	sb.WriteString("\n")
 
-	fmt.Fprintf(&sb, "\n<b>Limits</b>\n• Files up to %d MB (Telegram's limit for bots)\n• Public content only\n", downloader.MaxSize>>20)
+	fmt.Fprintf(&sb, "\n<b>Limits</b>\n• Files up to %d MB (Telegram's limit for bots)\n• Up to %d downloads at once per person\n• Public content only\n", downloader.MaxSize>>20, b.jobs.maxUser)
 
-	sb.WriteString("\n/start — greeting\n/help — this message")
+	sb.WriteString("\n/start — greeting\n/cancel — stop your running downloads\n/help — this message")
 	return sb.String()
 }
 

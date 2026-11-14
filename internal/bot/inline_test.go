@@ -49,6 +49,8 @@ func newTestBot(ps ...downloader.Provider) *Bot {
 	return &Bot{
 		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		providers: downloader.NewRegistry(ps...),
+		jobs:      newJobs(DefaultUserLimit, DefaultTotalLimit),
+		files:     newFileCache(maxCachedFiles),
 	}
 }
 

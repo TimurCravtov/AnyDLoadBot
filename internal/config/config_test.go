@@ -21,19 +21,22 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults",
 			env:  map[string]string{"BOT_TOKEN": "123:abc"},
-			want: Config{Token: "123:abc", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp"},
+			want: Config{Token: "123:abc", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100},
 		},
 		{
 			name: "overrides",
 			env: map[string]string{
 				"BOT_TOKEN": " 123:abc ", "LOG_LEVEL": "debug", "LOG_FORMAT": "json", "YTDLP_PATH": " /opt/yt-dlp ",
-				"STORAGE_CHAT_ID": "-1001234567890",
+				"STORAGE_CHAT_ID": "-1001234567890", "MAX_USER_DOWNLOADS": "2", "MAX_TOTAL_DOWNLOADS": "9",
 			},
 			want: Config{
 				Token: "123:abc", LogLevel: slog.LevelDebug, LogJSON: true,
 				YtDlpPath: "/opt/yt-dlp", StorageChatID: -1001234567890,
+				MaxUserDownloads: 2, MaxTotalDownloads: 9,
 			},
 		},
+		{name: "bad user limit", env: map[string]string{"BOT_TOKEN": "t", "MAX_USER_DOWNLOADS": "0"}, wantErr: true},
+		{name: "bad total limit", env: map[string]string{"BOT_TOKEN": "t", "MAX_TOTAL_DOWNLOADS": "many"}, wantErr: true},
 		{name: "bad storage chat", env: map[string]string{"BOT_TOKEN": "t", "STORAGE_CHAT_ID": "me"}, wantErr: true},
 		{name: "missing token", env: map[string]string{}, wantErr: true},
 		{name: "bad level", env: map[string]string{"BOT_TOKEN": "t", "LOG_LEVEL": "loud"}, wantErr: true},

@@ -26,6 +26,13 @@ type Config struct {
 	// InstagramCookies is an optional path to a Netscape cookies.txt from a
 	// logged-in browser, needed for Instagram posts that require login.
 	InstagramCookies string
+	// RedditCookies is a path to a logged-in cookies.txt; Reddit support is
+	// only enabled when it is set, because Reddit refuses anonymous requests.
+	RedditCookies string
+	// MaxUserDownloads and MaxTotalDownloads cap concurrent downloads per user
+	// and across the whole bot.
+	MaxUserDownloads  int
+	MaxTotalDownloads int
 	// StorageChatID is a private chat the bot uploads videos to for inline mode
 	// (0 = disabled). See bot.WithStorageChat.
 	StorageChatID int64
@@ -50,6 +57,9 @@ func load(getenv func(string) string) (Config, error) {
 		LogLevel: slog.LevelInfo,
 		LogJSON:  getenv("LOG_FORMAT") == "json",
 
+		MaxUserDownloads:  5,
+		MaxTotalDownloads: 100,
+
 		YtDlpPath: "yt-dlp",
 	}
 	if v := strings.TrimSpace(getenv("YTDLP_PATH")); v != "" {
@@ -66,7 +76,22 @@ func load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	for _, l := range []struct {
+		env string
+		dst *int
+	}{{"MAX_USER_DOWNLOADS", &cfg.MaxUserDownloads}, {"MAX_TOTAL_DOWNLOADS", &cfg.MaxTotalDownloads}} {
+		if v := strings.TrimSpace(getenv(l.env)); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				errs = append(errs, fmt.Errorf("%s: %q is not a positive number", l.env, v))
+				continue
+			}
+			*l.dst = n
+		}
+	}
+
 	cfg.InstagramCookies = strings.TrimSpace(getenv("INSTAGRAM_COOKIES"))
+	cfg.RedditCookies = strings.TrimSpace(getenv("REDDIT_COOKIES"))
 
 	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)

@@ -154,6 +154,7 @@ func placeholder(prefix, title, description, status, thumbnailURL, link string) 
 		// later) for messages that carry an inline keyboard.
 		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
 			{Text: "Source", URL: link},
+			{Text: "✖ Cancel", CallbackData: cancelData},
 		}}},
 	}
 }
@@ -186,14 +187,29 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	}
 
 	log := b.log.With("provider", provider.Name(), "link", link, "user_id", c.From.ID, "audio", audio)
+
+	job, err := b.jobs.start(ctx, c.From.ID)
+	if err != nil {
+		log.Warn("inline download refused", "reason", err)
+		b.editStatus(ctx, api, c.InlineMessageID, b.limitText(err))
+		return
+	}
+	defer job.finish()
+	job.setKey(c.InlineMessageID) // the placeholder's Cancel button identifies the job by this
 	log.Info("inline result chosen, downloading")
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(job.ctx, downloadTimeout)
 	defer cancel()
 
 	file, err := b.storedMedia(ctx, api, download, link, audio)
 	if err != nil {
+		if job.wasCancelled() {
+			log.Info("inline download cancelled by the user")
+			b.editStatus(parent, api, c.InlineMessageID, cancelledText)
+			return
+		}
 		text, unexpected := failureText(err)
 		if unexpected {
 			log.Error("inline download failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
