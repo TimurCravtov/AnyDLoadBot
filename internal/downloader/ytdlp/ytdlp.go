@@ -28,7 +28,7 @@ var unavailable = []string{
 	"video unavailable", "private video", "this video is private", "members-only",
 	"sign in to confirm your age", "age-restricted", "has been removed", "not available in your country",
 	"live event will begin", "premieres in", "this content isn't available", "login required",
-	"requested content is not available", "no video could be found",
+	"requested content is not available", "no video could be found", "ip address is blocked",
 }
 
 // Runner executes yt-dlp with args and returns its stdout.
