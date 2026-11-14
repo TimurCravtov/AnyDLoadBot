@@ -1,0 +1,40 @@
+# The bot plus a Cloudflare WARP proxy, for servers whose IP address is blocked by
+# YouTube/TikTok (most VPS providers). Works with `docker compose up -d` and as
+# a Coolify "Docker Compose" application.
+#
+# Settings come from the environment (Coolify: the application's Environment
+# Variables; locally: a .env file next to this file). Only BOT_TOKEN is required.
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?set BOT_TOKEN}
+      STORAGE_CHAT_ID: ${STORAGE_CHAT_ID:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAX_USER_DOWNLOADS: ${MAX_USER_DOWNLOADS:-5}
+      MAX_TOTAL_DOWNLOADS: ${MAX_TOTAL_DOWNLOADS:-100}
+      # yt-dlp's traffic goes through the warp service below.
+      YTDLP_PROXY: ${YTDLP_PROXY:-socks5://warp:1080}
+    depends_on:
+      warp:
+        condition: service_healthy
+
+  warp:
+    build: ./deploy/warp
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 10 --proxy socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  warp-data:
