@@ -1,30 +1,24 @@
-// Package youtube is a downloader.Provider for YouTube videos. It shells out to
-// yt-dlp (which tracks YouTube's frequent changes) and ffmpeg (to merge streams).
+// Package youtube is a downloader.Provider for YouTube videos and MP3 audio. It
+// uses the shared yt-dlp client (yt-dlp tracks YouTube's frequent changes).
 package youtube
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"anydloadbot/internal/downloader"
+	"anydloadbot/internal/downloader/ytdlp"
 )
 
 const (
 	// DefaultMaxDuration is the longest video the provider will download.
 	DefaultMaxDuration = 15 * time.Minute
-
-	defaultConcurrency = 2
-	maxStderr          = 500
 
 	oembedURL     = "https://www.youtube.com/oembed"
 	oembedTimeout = 3 * time.Second
@@ -40,91 +34,41 @@ const (
 var (
 	linkRe  = regexp.MustCompile(`https?://[^\s<>"]+`)
 	videoID = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
-
-	// Substrings of yt-dlp errors that mean "this video can't be downloaded"
-	// rather than "something broke".
-	unavailable = []string{
-		"video unavailable", "private video", "this video is private", "members-only",
-		"sign in to confirm your age", "age-restricted", "has been removed", "not available in your country",
-		"live event will begin", "premieres in",
-	}
 )
 
 // Options configures a Provider.
 type Options struct {
-	// YtDlp is the yt-dlp executable (default "yt-dlp").
-	YtDlp string
 	// MaxDuration is the longest allowed video (default DefaultMaxDuration).
 	MaxDuration time.Duration
-	// Concurrency bounds simultaneous yt-dlp processes (default 2).
-	Concurrency int
 }
 
-// runner executes yt-dlp with args and returns its stdout.
-type runner func(ctx context.Context, args ...string) ([]byte, error)
-
-// Provider downloads YouTube videos.
+// Provider downloads YouTube videos and audio.
 type Provider struct {
-	run         runner
+	yt          *ytdlp.Client
 	maxDuration time.Duration
-	sem         chan struct{}
 
 	fetch      *downloader.Fetcher // oEmbed lookups for inline previews
 	oembedBase string
 }
 
 var (
-	_ downloader.Provider  = (*Provider)(nil)
-	_ downloader.Previewer = (*Provider)(nil)
+	_ downloader.Provider        = (*Provider)(nil)
+	_ downloader.Previewer       = (*Provider)(nil)
+	_ downloader.AudioDownloader = (*Provider)(nil)
 )
 
-// New creates a YouTube provider. It fails if yt-dlp or ffmpeg is not installed.
-func New(opts Options) (*Provider, error) {
-	if opts.YtDlp == "" {
-		opts.YtDlp = "yt-dlp"
-	}
+// New creates a YouTube provider on top of a shared yt-dlp client.
+func New(yt *ytdlp.Client, opts Options) *Provider {
 	if opts.MaxDuration <= 0 {
 		opts.MaxDuration = DefaultMaxDuration
 	}
-	if opts.Concurrency <= 0 {
-		opts.Concurrency = defaultConcurrency
-	}
-
-	bin, err := exec.LookPath(opts.YtDlp)
-	if err != nil {
-		return nil, fmt.Errorf("yt-dlp not found: %w", err)
-	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return nil, fmt.Errorf("ffmpeg not found (needed to merge video and audio): %w", err)
-	}
-
 	return &Provider{
-		run:         execRunner(bin),
+		yt:          yt,
 		maxDuration: opts.MaxDuration,
-		sem:         make(chan struct{}, opts.Concurrency),
 		fetch: downloader.NewFetcher(func(host string) bool {
 			return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com")
 		}),
 		oembedBase: oembedURL,
-	}, nil
-}
-
-func execRunner(bin string) runner {
-	return func(ctx context.Context, args ...string) ([]byte, error) {
-		var stdout, stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, bin, args...)
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		if err := cmd.Run(); err != nil {
-			msg := strings.TrimSpace(stderr.String())
-			if len(msg) > maxStderr {
-				msg = msg[len(msg)-maxStderr:]
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, fmt.Errorf("yt-dlp: %w: %s", err, msg)
-		}
-		return stdout.Bytes(), nil
 	}
 }
 
@@ -215,104 +159,68 @@ func parseVideoID(link string) (string, bool) {
 	return id, videoID.MatchString(id)
 }
 
-type metadata struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Duration float64 `json:"duration"`
-	IsLive   bool    `json:"is_live"`
-}
-
 // Download implements downloader.Provider.
 func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media, error) {
-	if _, ok := p.FindURL(link); !ok {
-		return nil, fmt.Errorf("not a YouTube link: %q", link)
-	}
-
-	select {
-	case p.sem <- struct{}{}:
-		defer func() { <-p.sem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	meta, err := p.probe(ctx, link)
+	meta, release, err := p.prepare(ctx, link)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
+
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort})
+	if err != nil {
+		return nil, err
+	}
+	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: meta.Title}, nil
+}
+
+// DownloadAudio implements downloader.AudioDownloader. The MP3 has the title,
+// channel name and thumbnail embedded as ID3 tags and cover art.
+func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.Media, error) {
+	meta, release, err := p.prepare(ctx, link)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true})
+	if err != nil {
+		return nil, err
+	}
+	return &downloader.Media{
+		Kind:      downloader.KindAudio,
+		Filename:  file.Name,
+		Data:      file.Data,
+		Title:     meta.Title,
+		Performer: meta.Uploader,
+		Duration:  int(meta.Duration),
+	}, nil
+}
+
+// prepare validates the link, takes a yt-dlp slot and checks the video's
+// metadata before anything is downloaded. The caller must call release.
+func (p *Provider) prepare(ctx context.Context, link string) (meta *ytdlp.Info, release func(), err error) {
+	if _, ok := p.FindURL(link); !ok {
+		return nil, nil, fmt.Errorf("not a YouTube link: %q", link)
+	}
+
+	release, err = p.yt.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	meta, err = p.yt.Probe(ctx, link)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
 	if meta.IsLive || meta.Duration <= 0 {
-		return nil, fmt.Errorf("%w: live streams are not supported", downloader.ErrNoMedia)
+		release()
+		return nil, nil, fmt.Errorf("%w: live streams are not supported", downloader.ErrNoMedia)
 	}
-	if time.Duration(meta.Duration*float64(time.Second)) > p.maxDuration {
-		return nil, fmt.Errorf("%w: %s (limit %s)", downloader.ErrTooLong,
-			time.Duration(meta.Duration*float64(time.Second)).Round(time.Second), p.maxDuration)
+	if d := time.Duration(meta.Duration * float64(time.Second)); d > p.maxDuration {
+		release()
+		return nil, nil, fmt.Errorf("%w: %s (limit %s)", downloader.ErrTooLong, d.Round(time.Second), p.maxDuration)
 	}
-
-	dir, err := os.MkdirTemp("", "ytdl-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(dir)
-
-	out, err := p.run(ctx,
-		"--no-playlist", "--no-warnings", "--no-progress", "--no-mtime", "--restrict-filenames",
-		"--max-filesize", "50M",
-		"-f", formatSelector, "-S", formatSort, "--merge-output-format", "mp4",
-		"-P", dir, "-o", "%(id)s.%(ext)s",
-		"--no-simulate", "--print", "after_move:filepath",
-		"--", link)
-	if err != nil {
-		return nil, classify(err)
-	}
-
-	file := lastLine(out)
-	if file == "" {
-		// yt-dlp exits 0 without a file when --max-filesize rejects every format.
-		return nil, downloader.ErrTooLarge
-	}
-	// Only trust paths inside our temp dir.
-	if rel, err := filepath.Rel(dir, file); err != nil || strings.HasPrefix(rel, "..") {
-		return nil, fmt.Errorf("unexpected output path %q", file)
-	}
-
-	info, err := os.Stat(file)
-	if err != nil {
-		return nil, fmt.Errorf("stat downloaded file: %w", err)
-	}
-	if info.Size() > downloader.MaxSize {
-		return nil, downloader.ErrTooLarge
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return nil, fmt.Errorf("read downloaded file: %w", err)
-	}
-	return &downloader.Media{Filename: filepath.Base(file), Data: data, Title: meta.Title}, nil
-}
-
-func (p *Provider) probe(ctx context.Context, link string) (*metadata, error) {
-	out, err := p.run(ctx, "--dump-single-json", "--no-download", "--no-playlist", "--no-warnings", "--", link)
-	if err != nil {
-		return nil, classify(err)
-	}
-	var m metadata
-	if err := json.Unmarshal(out, &m); err != nil {
-		return nil, fmt.Errorf("parse yt-dlp metadata: %w", err)
-	}
-	return &m, nil
-}
-
-// classify turns yt-dlp failures about the video itself into ErrNoMedia so the
-// user gets a clear message; anything else is returned as an internal error.
-func classify(err error) error {
-	msg := strings.ToLower(err.Error())
-	for _, s := range unavailable {
-		if strings.Contains(msg, s) {
-			return fmt.Errorf("%w: %v", downloader.ErrNoMedia, err)
-		}
-	}
-	return err
-}
-
-func lastLine(b []byte) string {
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
+	return meta, release, nil
 }

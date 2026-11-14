@@ -20,11 +20,33 @@ var (
 	ErrTooLong = errors.New("media is too long")
 )
 
+// Kind is the type of a media file, which decides how it is sent to Telegram.
+type Kind int
+
+// Media kinds. KindVideo is the zero value, so providers that only return
+// videos don't need to set it.
+const (
+	KindVideo Kind = iota
+	KindPhoto
+	KindAudio
+)
+
 // Media is a downloaded file ready to be sent to the user.
 type Media struct {
+	Kind     Kind
 	Filename string
 	Data     []byte
-	Title    string // optional; used as the caption
+	Title    string // optional; the caption (video/photo) or track title (audio)
+
+	// Audio only.
+	Performer string
+	Duration  int // seconds
+}
+
+// AudioDownloader is implemented by providers that can extract an MP3 (with
+// title and cover art embedded) from a link.
+type AudioDownloader interface {
+	DownloadAudio(ctx context.Context, link string) (*Media, error)
 }
 
 // Provider downloads media from one website. Implementations must be safe for
@@ -41,10 +63,11 @@ type Provider interface {
 
 // Source describes media that Telegram can fetch itself from a direct URL.
 type Source struct {
+	Kind         Kind // KindVideo or KindPhoto
 	URL          string
 	ThumbnailURL string // JPEG preview, required by Telegram for inline videos
 	Title        string
-	MimeType     string // e.g. "video/mp4"
+	MimeType     string // e.g. "video/mp4"; unused for photos
 }
 
 // Resolver is implemented by providers whose media has a direct, publicly
@@ -91,6 +114,17 @@ func (r *Registry) Find(text string) (p Provider, link string, ok bool) {
 		}
 	}
 	return nil, "", false
+}
+
+// NamesWhere lists the names of the providers that satisfy keep, in registration order.
+func (r *Registry) NamesWhere(keep func(Provider) bool) []string {
+	var names []string
+	for _, p := range r.providers {
+		if keep(p) {
+			names = append(names, p.Name())
+		}
+	}
+	return names
 }
 
 // Names lists the supported sites, in registration order.

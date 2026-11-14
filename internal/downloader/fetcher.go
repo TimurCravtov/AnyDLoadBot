@@ -35,6 +35,28 @@ func NewFetcher(allowHost func(host string) bool) *Fetcher {
 	}}
 }
 
+// FinalURL follows redirects from rawURL and returns where they end, without
+// reading the body. It is used to turn a redirecting "media" endpoint into a
+// stable CDN URL that Telegram can fetch.
+func (f *Fetcher) FinalURL(ctx context.Context, rawURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %s", resp.Status)
+	}
+	return resp.Request.URL.String(), nil
+}
+
 // Get fetches rawURL and reads at most limit bytes; larger bodies yield ErrTooLarge.
 // accept is the preferred media type, e.g. "text/html" or "video/mp4".
 func (f *Fetcher) Get(ctx context.Context, rawURL string, limit int64, accept string) ([]byte, error) {

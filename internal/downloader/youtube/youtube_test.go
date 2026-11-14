@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"anydloadbot/internal/downloader"
+	"anydloadbot/internal/downloader/ytdlp"
 )
 
 func TestFindURL(t *testing.T) {
@@ -121,7 +122,11 @@ func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("\n"), nil
 	}
 	dir := args[slices.Index(args, "-P")+1]
-	path := filepath.Join(dir, "RkW7kOKUcko.mp4")
+	ext := ".mp4"
+	if slices.Contains(args, "-x") {
+		ext = ".mp3"
+	}
+	path := filepath.Join(dir, "RkW7kOKUcko"+ext)
 	if err := os.WriteFile(path, make([]byte, f.fileBytes), 0o600); err != nil {
 		return nil, err
 	}
@@ -129,7 +134,7 @@ func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 func newTestProvider(f *fakeRun) *Provider {
-	return &Provider{run: f.run, maxDuration: 15 * time.Minute, sem: make(chan struct{}, 1)}
+	return New(ytdlp.NewWithRunner(f.run, 1), Options{MaxDuration: 15 * time.Minute})
 }
 
 const link = "https://www.youtube.com/watch?v=RkW7kOKUcko"
@@ -225,11 +230,54 @@ func TestDownloadRespectsContextWhileQueued(t *testing.T) {
 	t.Parallel()
 
 	p := newTestProvider(&fakeRun{})
-	p.sem <- struct{}{} // all slots busy
+	release, err := p.yt.Acquire(context.Background()) // all slots busy
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := p.Download(ctx, link); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestDownloadAudio(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeRun{meta: `{"id":"RkW7kOKUcko","title":"Don't Look Back","uploader":"eRtRko","duration":433.2}`, fileBytes: 999}
+	m, err := newTestProvider(f).DownloadAudio(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Kind != downloader.KindAudio || m.Filename != "RkW7kOKUcko.mp3" || len(m.Data) != 999 {
+		t.Errorf("unexpected media: kind=%v %q %d bytes", m.Kind, m.Filename, len(m.Data))
+	}
+	if m.Title != "Don't Look Back" || m.Performer != "eRtRko" || m.Duration != 433 {
+		t.Errorf("tags: title=%q performer=%q duration=%d", m.Title, m.Performer, m.Duration)
+	}
+
+	// yt-dlp must be asked to extract MP3 and embed the metadata and cover art.
+	args := f.calls[1]
+	for _, want := range []string{"-x", "--embed-metadata", "--embed-thumbnail"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("yt-dlp args missing %s: %v", want, args)
+		}
+	}
+	if i := slices.Index(args, "--audio-format"); i < 0 || args[i+1] != "mp3" {
+		t.Errorf("yt-dlp not asked for mp3: %v", args)
+	}
+}
+
+func TestDownloadAudioHonoursDurationLimit(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeRun{meta: `{"duration":901}`}
+	if _, err := newTestProvider(f).DownloadAudio(context.Background(), link); !errors.Is(err, downloader.ErrTooLong) {
+		t.Errorf("err = %v, want ErrTooLong", err)
+	}
+	if len(f.calls) != 1 {
+		t.Errorf("yt-dlp ran %d times, want 1 (probe only)", len(f.calls))
 	}
 }
