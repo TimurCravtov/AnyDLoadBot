@@ -48,12 +48,18 @@ const link = "https://www.instagram.com/p/Dfm3F4vB-03/"
 // fakeYtDlp writes a file into the -P directory like a successful download, or
 // fails with err.
 type fakeYtDlp struct {
-	err   error
-	calls [][]string
+	err     error
+	calls   [][]string
+	cookies []string // contents of the --cookies file at the time of each run
 }
 
 func (f *fakeYtDlp) run(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
+	if i := slices.Index(args, "--cookies"); i >= 0 {
+		if data, err := os.ReadFile(args[i+1]); err == nil {
+			f.cookies = append(f.cookies, string(data))
+		}
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -64,8 +70,13 @@ func (f *fakeYtDlp) run(_ context.Context, args ...string) ([]byte, error) {
 	return []byte(path + "\n"), nil
 }
 
-func newTestProvider(f *fakeYtDlp, mediaBase string) *Provider {
-	p := New(ytdlp.NewWithRunner(f.run, 1), Options{Cookies: "cookies.txt"})
+func newTestProvider(t *testing.T, f *fakeYtDlp, mediaBase string) *Provider {
+	t.Helper()
+	cookies := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.WriteFile(cookies, []byte("cookie-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := New(ytdlp.NewWithRunner(f.run, 1), Options{Cookies: cookies})
 	p.fetch = downloader.NewFetcher(func(string) bool { return true })
 	p.siteBase = mediaBase
 	return p
@@ -75,7 +86,7 @@ func TestDownloadVideo(t *testing.T) {
 	t.Parallel()
 
 	f := &fakeYtDlp{}
-	m, err := newTestProvider(f, "").Download(context.Background(), link)
+	m, err := newTestProvider(t, f, "").Download(context.Background(), link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +95,8 @@ func TestDownloadVideo(t *testing.T) {
 	}
 
 	args := f.calls[0]
-	if i := slices.Index(args, "--cookies"); i < 0 || args[i+1] != "cookies.txt" {
-		t.Errorf("cookies not passed to yt-dlp: %v", args)
+	if len(f.cookies) != 1 || f.cookies[0] != "cookie-data" {
+		t.Errorf("yt-dlp did not receive the configured cookies: %q", f.cookies)
 	}
 	if i := slices.Index(args, "-f"); i < 0 || args[i+1] != formatSelector {
 		t.Errorf("unexpected format selector: %v", args)
@@ -107,7 +118,7 @@ func TestDownloadImageFallback(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := &fakeYtDlp{err: errors.New("yt-dlp: exit status 1: ERROR: [Instagram] X: There is no video in this post")}
-	m, err := newTestProvider(f, srv.URL).Download(context.Background(), link)
+	m, err := newTestProvider(t, f, srv.URL).Download(context.Background(), link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +136,7 @@ func TestDownloadImageFallbackRejectsNonImages(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := &fakeYtDlp{err: errors.New("There is no video in this post")}
-	if _, err := newTestProvider(f, srv.URL).Download(context.Background(), link); !errors.Is(err, downloader.ErrNoMedia) {
+	if _, err := newTestProvider(t, f, srv.URL).Download(context.Background(), link); !errors.Is(err, downloader.ErrNoMedia) {
 		t.Errorf("err = %v, want ErrNoMedia", err)
 	}
 }
@@ -135,7 +146,7 @@ func TestDownloadOtherErrorsDoNotFallBack(t *testing.T) {
 
 	// No server is running: reaching the image fallback would fail differently.
 	f := &fakeYtDlp{err: errors.New("yt-dlp: exit status 1: ERROR: unable to download webpage: timed out")}
-	_, err := newTestProvider(f, "http://127.0.0.1:1").Download(context.Background(), link)
+	_, err := newTestProvider(t, f, "http://127.0.0.1:1").Download(context.Background(), link)
 	if err == nil || errors.Is(err, downloader.ErrNoMedia) {
 		t.Errorf("err = %v, want the raw yt-dlp error", err)
 	}
@@ -151,13 +162,13 @@ func TestPreview(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got, ok := newTestProvider(&fakeYtDlp{}, srv.URL).Preview(context.Background(), link)
+	got, ok := newTestProvider(t, &fakeYtDlp{}, srv.URL).Preview(context.Background(), link)
 	if !ok || got.ThumbnailURL != cdn.URL+"/photo.jpg" || got.Title != "Instagram post" {
 		t.Errorf("Preview() = %+v, %v", got, ok)
 	}
 
 	// No thumbnail, no placeholder.
-	dead := newTestProvider(&fakeYtDlp{}, "http://127.0.0.1:1")
+	dead := newTestProvider(t, &fakeYtDlp{}, "http://127.0.0.1:1")
 	if _, ok := dead.Preview(context.Background(), link); ok {
 		t.Error("Preview() succeeded without a reachable thumbnail")
 	}

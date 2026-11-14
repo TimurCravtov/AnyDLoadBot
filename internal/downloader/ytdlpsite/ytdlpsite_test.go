@@ -82,13 +82,19 @@ const link = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
 
 // fakeRun emulates yt-dlp: metadata for --dump-single-json, otherwise a file in -P.
 type fakeRun struct {
-	meta  string
-	err   error
-	calls [][]string
+	meta    string
+	err     error
+	calls   [][]string
+	cookies []string // contents of the --cookies file at the time of each run
 }
 
 func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
+	if i := slices.Index(args, "--cookies"); i >= 0 {
+		if data, err := os.ReadFile(args[i+1]); err == nil {
+			f.cookies = append(f.cookies, string(data))
+		}
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -110,7 +116,11 @@ func TestDownload(t *testing.T) {
 	t.Parallel()
 
 	f := &fakeRun{meta: `{"title":"Scramble up ur name","duration":10}`}
-	m, err := newTestProvider(f, Options{Cookies: "cookies.txt"}).Download(context.Background(), link)
+	cookies := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.WriteFile(cookies, []byte("cookie-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newTestProvider(f, Options{Cookies: cookies}).Download(context.Background(), link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +139,12 @@ func TestDownload(t *testing.T) {
 		if args[len(args)-2] != "--" || args[len(args)-1] != link {
 			t.Errorf("call %d: link not passed after --: %v", i, args)
 		}
-		if j := slices.Index(args, "--cookies"); j < 0 || args[j+1] != "cookies.txt" {
+		if !slices.Contains(args, "--cookies") {
 			t.Errorf("call %d: cookies not passed: %v", i, args)
 		}
+	}
+	if len(f.cookies) != 2 || f.cookies[0] != "cookie-data" || f.cookies[1] != "cookie-data" {
+		t.Errorf("yt-dlp did not receive the configured cookies: %q", f.cookies)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"anydloadbot/internal/downloader"
@@ -37,13 +38,36 @@ type Runner func(ctx context.Context, args ...string) ([]byte, error)
 // Client runs yt-dlp. All providers share one Client, so the concurrency limit
 // applies to the whole process, not to each site.
 type Client struct {
-	run Runner
-	sem chan struct{}
+	run      Runner
+	sem      chan struct{}
+	defaults []string // added to every run, before per-request arguments
+}
+
+// Options are settings that apply to every yt-dlp run.
+type Options struct {
+	// Cookies is a Netscape-format cookies.txt used for every site. Sites that
+	// block anonymous or datacenter traffic (YouTube) often need it. It can hold
+	// cookies for several sites; yt-dlp only sends the ones that match.
+	Cookies string
+	// Proxy routes every request through a proxy, e.g. http://host:3128 or
+	// socks5://host:1080. Useful when a site blocks the server's IP address.
+	Proxy string
+}
+
+func (o Options) args() []string {
+	var args []string
+	if o.Cookies != "" {
+		args = append(args, "--cookies", o.Cookies)
+	}
+	if o.Proxy != "" {
+		args = append(args, "--proxy", o.Proxy)
+	}
+	return args
 }
 
 // New returns a Client for the yt-dlp executable. It fails if yt-dlp or ffmpeg
 // is not installed.
-func New(bin string, concurrency int) (*Client, error) {
+func New(bin string, concurrency int, opts Options) (*Client, error) {
 	if bin == "" {
 		bin = "yt-dlp"
 	}
@@ -54,15 +78,71 @@ func New(bin string, concurrency int) (*Client, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, fmt.Errorf("ffmpeg not found (needed to merge streams and extract audio): %w", err)
 	}
-	return NewWithRunner(execRunner(path), concurrency), nil
+	return NewWithRunner(execRunner(path), concurrency, opts.args()...), nil
 }
 
 // NewWithRunner returns a Client that uses run instead of the real executable.
-func NewWithRunner(run Runner, concurrency int) *Client {
+// defaults are yt-dlp arguments added to every run.
+func NewWithRunner(run Runner, concurrency int, defaults ...string) *Client {
 	if concurrency <= 0 {
 		concurrency = DefaultConcurrency
 	}
-	return &Client{run: run, sem: make(chan struct{}, concurrency)}
+	return &Client{run: run, sem: make(chan struct{}, concurrency), defaults: defaults}
+}
+
+// exec runs yt-dlp with the client's default arguments followed by args. Any
+// cookies file is replaced by a private temporary copy for the run: yt-dlp
+// rewrites its cookies file on exit, so concurrent runs sharing one file could
+// corrupt it, and a read-only mount (Docker) would make it fail.
+func (c *Client) exec(ctx context.Context, args []string) ([]byte, error) {
+	args, cleanup, err := copyCookies(append(slices.Clone(c.defaults), args...))
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return c.run(ctx, args...)
+}
+
+func copyCookies(args []string) (out []string, cleanup func(), err error) {
+	var tmpFiles []string
+	cleanup = func() {
+		for _, f := range tmpFiles {
+			_ = os.Remove(f)
+		}
+	}
+
+	out = slices.Clone(args)
+	for i := 0; i+1 < len(out); i++ {
+		// Stop at "--": everything after it is the link, never an option.
+		if out[i] == "--" {
+			break
+		}
+		if out[i] != "--cookies" {
+			continue
+		}
+		data, err := os.ReadFile(out[i+1])
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("read cookies file: %w", err)
+		}
+		f, err := os.CreateTemp("", "ytdl-cookies-*.txt") // created with mode 0600
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("copy cookies file: %w", err)
+		}
+		tmpFiles = append(tmpFiles, f.Name())
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("copy cookies file: %w", werr)
+		}
+		out[i+1] = f.Name()
+		i++
+	}
+	return out, cleanup, nil
 }
 
 func execRunner(bin string) Runner {
@@ -109,7 +189,7 @@ type Info struct {
 // yt-dlp arguments, such as --cookies.
 func (c *Client) Probe(ctx context.Context, link string, extra ...string) (*Info, error) {
 	args := append([]string{"--dump-single-json", "--no-download", "--no-playlist", "--no-warnings"}, extra...)
-	out, err := c.run(ctx, append(args, "--", link)...)
+	out, err := c.exec(ctx, append(args, "--", link))
 	if err != nil {
 		return nil, Classify(err)
 	}
@@ -163,7 +243,7 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 		"--no-simulate", "--print", "after_move:filepath",
 		"--", link)
 
-	out, err := c.run(ctx, args...)
+	out, err := c.exec(ctx, args)
 	if err != nil {
 		return nil, Classify(err)
 	}

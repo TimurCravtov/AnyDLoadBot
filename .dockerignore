@@ -4,3 +4,7 @@ bin
 .env
 .env.*
 *.md
+
+# Browser cookies are credentials
+cookies*.txt
+*.cookies

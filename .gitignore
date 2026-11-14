@@ -13,3 +13,7 @@
 coverage.txt
 .idea/
 .vscode/
+
+# Browser cookies are credentials
+cookies*.txt
+*.cookies
