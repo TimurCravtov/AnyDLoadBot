@@ -65,6 +65,11 @@ func New() *Provider {
 // Name implements downloader.Provider.
 func (*Provider) Name() string { return "X" }
 
+// Description implements downloader.Describer.
+func (*Provider) Description() string {
+	return "videos, GIFs and images from posts (x.com and twitter.com)"
+}
+
 // FindURL implements downloader.Provider. The returned link is canonical
 // (https://x.com/i/status/ID).
 func (*Provider) FindURL(text string) (string, bool) {

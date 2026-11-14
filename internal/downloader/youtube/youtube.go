@@ -75,6 +75,11 @@ func New(yt *ytdlp.Client, opts Options) *Provider {
 // Name implements downloader.Provider.
 func (*Provider) Name() string { return "YouTube" }
 
+// Description implements downloader.Describer.
+func (p *Provider) Description() string {
+	return fmt.Sprintf("videos and Shorts up to %d min; add \"mp3\" after the link for audio with title and cover", int(p.maxDuration.Minutes()))
+}
+
 // FindURL implements downloader.Provider. The returned link is canonical
 // (https://www.youtube.com/watch?v=ID), so playlist and tracking parameters are dropped.
 func (*Provider) FindURL(text string) (string, bool) {

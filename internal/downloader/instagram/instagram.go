@@ -76,6 +76,11 @@ func New(yt *ytdlp.Client, opts Options) *Provider {
 // Name implements downloader.Provider.
 func (*Provider) Name() string { return "Instagram" }
 
+// Description implements downloader.Describer.
+func (*Provider) Description() string {
+	return "reels, videos and images from public posts (first item of a carousel)"
+}
+
 func isInstagramHost(host string) bool {
 	host = strings.ToLower(host)
 	return host == "instagram.com" || host == "www.instagram.com" || host == "instagr.am"

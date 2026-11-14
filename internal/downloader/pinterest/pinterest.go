@@ -58,6 +58,9 @@ func New() *Provider {
 // Name implements downloader.Provider.
 func (*Provider) Name() string { return "Pinterest" }
 
+// Description implements downloader.Describer.
+func (*Provider) Description() string { return "video pins (pinterest.com and pin.it links)" }
+
 // FindURL implements downloader.Provider.
 func (*Provider) FindURL(text string) (string, bool) {
 	for _, m := range linkRe.FindAllString(text, -1) {

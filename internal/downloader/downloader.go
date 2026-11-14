@@ -6,6 +6,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"slices"
 )
 
 // MaxSize is the largest file the Telegram Bot API lets a bot upload.
@@ -41,6 +42,12 @@ type Media struct {
 	// Audio only.
 	Performer string
 	Duration  int // seconds
+}
+
+// Describer is implemented by providers that tell users what they support, for
+// the /help command. Keep it to one short line, e.g. "videos up to 15 min, MP3".
+type Describer interface {
+	Description() string
 }
 
 // AudioDownloader is implemented by providers that can extract an MP3 (with
@@ -114,6 +121,11 @@ func (r *Registry) Find(text string) (p Provider, link string, ok bool) {
 		}
 	}
 	return nil, "", false
+}
+
+// All returns the registered providers, in registration order.
+func (r *Registry) All() []Provider {
+	return slices.Clone(r.providers)
 }
 
 // NamesWhere lists the names of the providers that satisfy keep, in registration order.
