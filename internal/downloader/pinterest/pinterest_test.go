@@ -3,6 +3,10 @@ package pinterest
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"anydloadbot/internal/downloader"
@@ -53,8 +57,13 @@ func TestParseVideoURL(t *testing.T) {
 			want: "https://v1.pinimg.com/videos/mc/720p/a/b.mp4",
 		},
 		{
-			name: "escaped slashes",
-			page: `"url":"https://v1.pinimg.com/videos/iht/expMp4/a_720w.mp4"`,
+			name: "unicode-escaped slashes",
+			page: strings.ReplaceAll(`"url":"https://v1.pinimg.com/videos/iht/expMp4/a_720w.mp4"`, "/", `\`+"u002F"),
+			want: "https://v1.pinimg.com/videos/iht/expMp4/a_720w.mp4",
+		},
+		{
+			name: "backslash-escaped slashes",
+			page: strings.ReplaceAll(`"url":"https://v1.pinimg.com/videos/iht/expMp4/a_720w.mp4"`, "/", `\/`),
 			want: "https://v1.pinimg.com/videos/iht/expMp4/a_720w.mp4",
 		},
 		{name: "ignores other hosts", page: `https://evil.com/videos/a.mp4`, wantErr: downloader.ErrNoMedia},
@@ -105,5 +114,103 @@ func TestDownloadRejectsForeignLinks(t *testing.T) {
 		if _, err := New().Download(context.Background(), link); err == nil {
 			t.Errorf("Download(%q) succeeded, want error", link)
 		}
+	}
+}
+
+// pinServer serves a widget endpoint and a pin page, counting requests to each.
+type pinServer struct {
+	widgetBody, pageBody string
+	widgetHits, pageHits atomic.Int32
+}
+
+func (s *pinServer) start(t *testing.T) (*httptest.Server, *Provider) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v3/pidgets/pins/info/") {
+			s.widgetHits.Add(1)
+			_, _ = w.Write([]byte(s.widgetBody))
+			return
+		}
+		s.pageHits.Add(1)
+		_, _ = w.Write([]byte(s.pageBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := New()
+	p.fetch = downloader.NewFetcher(func(string) bool { return true })
+	p.widget = srv.URL + "/v3/pidgets/pins/info/?pin_ids="
+	p.allowLink = func(string) bool { return true }
+	return srv, p
+}
+
+const (
+	widgetWithVideo = `{"status":"success","data":[{"id":"1036179826779090032","story_pin_data":{"pages":[{"blocks":[{"video":{"video_list":{"V_EXP7":{"url":"https://v1.pinimg.com/videos/iht/expMp4/dd/52/x_720w.mp4","thumbnail":"https://i.pinimg.com/videos/thumbnails/originals/dd/52/x.0000000.jpg"}}}}]}]}}]}`
+	widgetNoVideo   = `{"status":"success","data":[{"id":"1","videos":null,"images":{"237x":{"url":"https://i.pinimg.com/237x/aa/bb.jpg"}}}]}`
+	pageWithVideo   = `<html><script>{"url":"https://v1.pinimg.com/videos/mc/720p/page/clip.mp4"}</script></html>`
+)
+
+func TestResolveUsesWidgetForLongLinks(t *testing.T) {
+	t.Parallel()
+
+	s := &pinServer{widgetBody: widgetWithVideo, pageBody: pageWithVideo}
+	srv, p := s.start(t)
+
+	src, err := p.Resolve(context.Background(), srv.URL+"/pin/1036179826779090032/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.URL != "https://v1.pinimg.com/videos/iht/expMp4/dd/52/x_720w.mp4" {
+		t.Errorf("URL = %q, want the widget's video", src.URL)
+	}
+	if src.ThumbnailURL != "https://i.pinimg.com/videos/thumbnails/originals/dd/52/x.0000000.jpg" {
+		t.Errorf("thumbnail = %q", src.ThumbnailURL)
+	}
+	if s.widgetHits.Load() != 1 || s.pageHits.Load() != 0 {
+		t.Errorf("hits widget=%d page=%d, want 1 and 0 (the page must not be needed)", s.widgetHits.Load(), s.pageHits.Load())
+	}
+}
+
+func TestResolveFallsBackToPageWhenWidgetHasNoVideo(t *testing.T) {
+	t.Parallel()
+
+	s := &pinServer{widgetBody: widgetNoVideo, pageBody: pageWithVideo}
+	srv, p := s.start(t)
+
+	src, err := p.Resolve(context.Background(), srv.URL+"/pin/123456789/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.URL != "https://v1.pinimg.com/videos/mc/720p/page/clip.mp4" {
+		t.Errorf("URL = %q, want the page's video", src.URL)
+	}
+	if s.widgetHits.Load() != 1 || s.pageHits.Load() != 1 {
+		t.Errorf("hits widget=%d page=%d, want 1 and 1", s.widgetHits.Load(), s.pageHits.Load())
+	}
+}
+
+func TestResolveShortLinksSkipTheWidget(t *testing.T) {
+	t.Parallel()
+
+	s := &pinServer{widgetBody: widgetWithVideo, pageBody: pageWithVideo}
+	srv, p := s.start(t)
+
+	// A pin.it-style link doesn't name the pin, so only the page can be used.
+	src, err := p.Resolve(context.Background(), srv.URL+"/AbCdEf/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.URL != "https://v1.pinimg.com/videos/mc/720p/page/clip.mp4" || s.widgetHits.Load() != 0 {
+		t.Errorf("URL = %q, widget hits = %d; want the page's video and no widget call", src.URL, s.widgetHits.Load())
+	}
+}
+
+func TestResolveNoVideoAnywhere(t *testing.T) {
+	t.Parallel()
+
+	s := &pinServer{widgetBody: widgetNoVideo, pageBody: `<html>image pin</html>`}
+	srv, p := s.start(t)
+
+	if _, err := p.Resolve(context.Background(), srv.URL+"/pin/123456789/"); !errors.Is(err, downloader.ErrNoMedia) {
+		t.Errorf("err = %v, want ErrNoMedia", err)
 	}
 }

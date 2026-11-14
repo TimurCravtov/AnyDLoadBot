@@ -13,7 +13,12 @@ import (
 	"anydloadbot/internal/downloader"
 )
 
-const maxPageSize = 10 << 20
+const (
+	maxPageSize   = 10 << 20
+	maxWidgetSize = 1 << 20
+	// The public JSON endpoint behind Pinterest's embedded-pin widgets.
+	widgetURL = "https://widgets.pinterest.com/v3/pidgets/pins/info/?pin_ids="
+)
 
 var (
 	pinterestHost = regexp.MustCompile(`^(?:[a-z0-9-]+\.)*pinterest\.[a-z]{2,3}(?:\.[a-z]{2})?$`)
@@ -24,7 +29,10 @@ var (
 	thumbRe = regexp.MustCompile(`https://i\.pinimg\.com/[^"'\s<>\\]+?\.jpe?g`)
 	// Quality hints: ".../720p/..." or "..._720w.mp4".
 	qualityRe = regexp.MustCompile(`/(\d+)p/|_(\d+)w\.mp4$`)
-	unescaper = strings.NewReplacer(`/`, "/", `/`, "/", `\/`, "/", `&amp;`, "&")
+	// JSON may escape "/" as \/ or as the unicode escape \u002F.
+	unescaper = strings.NewReplacer(`\/`, "/", `\`+"u002F", "/", `\`+"u002f", "/", `&amp;`, "&")
+	// Long links name the pin: /pin/<id>/ (also on country domains).
+	pinPath = regexp.MustCompile(`^/pin/([0-9]{5,25})(?:/|$)`)
 )
 
 func isPinterestHost(host string) bool {
@@ -39,7 +47,9 @@ func isCDNHost(host string) bool {
 
 // Provider downloads videos from Pinterest pins (pinterest.* and pin.it links).
 type Provider struct {
-	fetch *downloader.Fetcher
+	fetch     *downloader.Fetcher
+	widget    string                 // widgetURL; tests point it elsewhere
+	allowLink func(host string) bool // which links Resolve accepts
 }
 
 var (
@@ -50,9 +60,13 @@ var (
 // New creates a Pinterest provider. Redirects (including pin.it short links)
 // are only followed to Pinterest or its CDN.
 func New() *Provider {
-	return &Provider{fetch: downloader.NewFetcher(func(h string) bool {
-		return isPinterestHost(h) || isCDNHost(h)
-	})}
+	return &Provider{
+		fetch: downloader.NewFetcher(func(h string) bool {
+			return isPinterestHost(h) || isCDNHost(h)
+		}),
+		widget:    widgetURL,
+		allowLink: isPinterestHost,
+	}
 }
 
 // Name implements downloader.Provider.
@@ -76,16 +90,30 @@ func (*Provider) FindURL(text string) (string, bool) {
 // Resolve implements downloader.Resolver.
 func (p *Provider) Resolve(ctx context.Context, link string) (*downloader.Source, error) {
 	u, err := url.Parse(link)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !isPinterestHost(u.Hostname()) {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !p.allowLink(u.Hostname()) {
 		return nil, fmt.Errorf("not a Pinterest link: %q", link)
 	}
 
-	page, err := p.fetch.Get(ctx, link, maxPageSize, "text/html")
+	// For a long link, ask the embed widget's JSON first. It is small, and it is
+	// served to visitors that get a login or consent wall instead of the full pin
+	// page (some regions and datacenter IPs). Short pin.it links don't name the
+	// pin, so they go to the page, where the redirect leads.
+	if m := pinPath.FindStringSubmatch(u.Path); m != nil {
+		if src, err := p.fromJSON(ctx, p.widget+m[1], maxWidgetSize, "application/json"); err == nil {
+			return src, nil
+		}
+	}
+	return p.fromJSON(ctx, link, maxPageSize, "text/html")
+}
+
+// fromJSON fetches a pin page or widget response and extracts the video from it.
+func (p *Provider) fromJSON(ctx context.Context, from string, limit int64, accept string) (*downloader.Source, error) {
+	body, err := p.fetch.Get(ctx, from, limit, accept)
 	if err != nil {
-		return nil, fmt.Errorf("fetch pin page: %w", err)
+		return nil, fmt.Errorf("fetch pin: %w", err)
 	}
 
-	videoURL, err := ParseVideoURL(page)
+	videoURL, err := ParseVideoURL(body)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +123,7 @@ func (p *Provider) Resolve(ctx context.Context, link string) (*downloader.Source
 
 	return &downloader.Source{
 		URL:          videoURL,
-		ThumbnailURL: ParseThumbnailURL(page),
+		ThumbnailURL: ParseThumbnailURL(body),
 		Title:        "Pinterest video",
 		MimeType:     "video/mp4",
 	}, nil
