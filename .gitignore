@@ -1,0 +1,15 @@
+# Binaries
+/bin/
+*.exe
+*.test
+*.out
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Tooling
+coverage.txt
+.idea/
+.vscode/
