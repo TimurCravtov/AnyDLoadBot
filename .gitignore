@@ -15,5 +15,7 @@ coverage.txt
 .vscode/
 
 # Browser cookies are credentials
-cookies*.txt
+*cookies*.txt
+# base64-encoded cookies (for COOKIES_B64 settings)
+*.b64
 *.cookies
