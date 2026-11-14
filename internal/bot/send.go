@@ -78,15 +78,16 @@ func (b *Bot) uploadToStorage(ctx context.Context, api *tgbot.Bot, m *downloader
 }
 
 // inputMedia builds the editMessageMedia payload that swaps an inline
-// placeholder for the stored file.
+// placeholder for the stored file. Inline messages are sent without a caption
+// (the title is shown in the results list instead); an MP3 keeps its track
+// title and performer, which are part of the audio itself.
 func inputMedia(f cachedFile) models.InputMedia {
-	caption := truncate(f.title, maxCaptionRunes)
 	switch f.kind {
 	case downloader.KindPhoto:
-		return &models.InputMediaPhoto{Media: f.fileID, Caption: caption}
+		return &models.InputMediaPhoto{Media: f.fileID}
 	case downloader.KindAudio:
 		return &models.InputMediaAudio{Media: f.fileID, Title: f.title, Performer: f.performer, Duration: f.duration}
 	default:
-		return &models.InputMediaVideo{Media: f.fileID, Caption: caption, SupportsStreaming: true}
+		return &models.InputMediaVideo{Media: f.fileID, SupportsStreaming: true}
 	}
 }

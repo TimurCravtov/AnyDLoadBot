@@ -102,7 +102,6 @@ func (b *Bot) directResult(ctx context.Context, results []models.InlineQueryResu
 			PhotoURL:     src.URL,
 			ThumbnailURL: src.ThumbnailURL,
 			Title:        src.Title,
-			Caption:      truncate(src.Title, maxCaptionRunes),
 		})
 	}
 	results = append(results, &models.InlineQueryResultVideo{
@@ -111,7 +110,6 @@ func (b *Bot) directResult(ctx context.Context, results []models.InlineQueryResu
 		MimeType:     src.MimeType,
 		ThumbnailURL: src.ThumbnailURL,
 		Title:        src.Title,
-		Caption:      truncate(src.Title, maxCaptionRunes),
 	})
 
 	// A direct-link site that can also extract audio gets an MP3 row. Unlike the

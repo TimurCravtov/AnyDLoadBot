@@ -92,6 +92,9 @@ func TestInlineResults(t *testing.T) {
 			if v.VideoURL != good.URL || v.ThumbnailURL != good.ThumbnailURL || v.MimeType != "video/mp4" {
 				t.Errorf("unexpected result: %+v", v)
 			}
+			if v.Caption != "" {
+				t.Errorf("inline result has caption %q; inline messages are sent without one", v.Caption)
+			}
 			if len(v.ID) == 0 || len(v.ID) > 64 {
 				t.Errorf("result ID %q must be 1-64 bytes", v.ID)
 			}

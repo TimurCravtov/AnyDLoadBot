@@ -239,6 +239,10 @@ func TestChosenInlineResult(t *testing.T) {
 	if !strings.Contains(edit.fields["media"], fakeFileID) {
 		t.Errorf("editMessageMedia media %q does not reference the uploaded file_id", edit.fields["media"])
 	}
+	// Inline messages go out without a caption; the title was in the results list.
+	if strings.Contains(edit.fields["media"], `"caption"`) {
+		t.Errorf("inline video has a caption: %s", edit.fields["media"])
+	}
 
 	// A second pick of the same link reuses the cached file_id: no new download or upload.
 	b.handleChosenInline(context.Background(), b.api, chosen("slow://abc"))
