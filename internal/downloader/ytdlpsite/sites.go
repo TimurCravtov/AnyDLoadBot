@@ -25,7 +25,6 @@ func TikTok() Site {
 	return Site{
 		Name:        "TikTok",
 		Description: "videos",
-		NoCaption:   true, // TikTok's title is the whole video description
 		Preview: func(u *url.URL) *downloader.Preview {
 			// /@author/video/<id> names the author; short links don't.
 			desc := "Tap to download"

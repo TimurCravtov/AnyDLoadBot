@@ -180,11 +180,12 @@ func (c *Client) Acquire(ctx context.Context) (release func(), err error) {
 
 // Info is the part of yt-dlp's metadata the providers use.
 type Info struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Uploader string  `json:"uploader"`
-	Duration float64 `json:"duration"` // seconds; 0 if unknown
-	IsLive   bool    `json:"is_live"`
+	ID        string  `json:"id"`
+	Title     string  `json:"title"`
+	Uploader  string  `json:"uploader"`
+	Thumbnail string  `json:"thumbnail"` // cover image URL, if the site has one
+	Duration  float64 `json:"duration"`  // seconds; 0 if unknown
+	IsLive    bool    `json:"is_live"`
 }
 
 // Probe fetches a link's metadata without downloading it. extra are additional

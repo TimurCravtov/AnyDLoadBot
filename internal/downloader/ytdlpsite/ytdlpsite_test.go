@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,11 +86,28 @@ const link = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
 type fakeRun struct {
 	meta    string
 	err     error
+	delay   time.Duration // how long each run takes
+	mu      sync.Mutex
 	calls   [][]string
 	cookies []string // contents of the --cookies file at the time of each run
 }
 
-func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
+func (f *fakeRun) runs() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeRun) run(ctx context.Context, args ...string) ([]byte, error) {
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
 	if i := slices.Index(args, "--cookies"); i >= 0 {
 		if data, err := os.ReadFile(args[i+1]); err == nil {
@@ -101,7 +120,11 @@ func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 	if slices.Contains(args, "--dump-single-json") {
 		return []byte(f.meta), nil
 	}
-	path := filepath.Join(args[slices.Index(args, "-P")+1], "6718335390845095173.mp4")
+	ext := ".mp4"
+	if slices.Contains(args, "-x") {
+		ext = ".mp3"
+	}
+	path := filepath.Join(args[slices.Index(args, "-P")+1], "6718335390845095173"+ext)
 	if err := os.WriteFile(path, []byte("video"), 0o600); err != nil {
 		return nil, err
 	}
@@ -127,8 +150,8 @@ func TestDownload(t *testing.T) {
 	if m.Kind != downloader.KindVideo || string(m.Data) != "video" {
 		t.Errorf("unexpected media: %+v", m)
 	}
-	if m.Title != "" {
-		t.Errorf("TikTok video has caption %q, want none", m.Title)
+	if m.Title != "Scramble up ur name" {
+		t.Errorf("title = %q, want the video's title (the chat caption)", m.Title)
 	}
 
 	if len(f.calls) != 2 {
@@ -194,7 +217,7 @@ func TestDescription(t *testing.T) {
 	t.Parallel()
 
 	p := newTestProvider(&fakeRun{}, Options{MaxDuration: 5 * time.Minute})
-	if got := p.Description(); got != "videos (up to 5 min)" {
+	if got := p.Description(); got != `videos (up to 5 min); add "mp3" after the link for the sound` {
 		t.Errorf("Description() = %q", got)
 	}
 }
@@ -258,5 +281,131 @@ func TestWithInlineWithoutPreviewIsUnchanged(t *testing.T) {
 	}
 	if _, ok := WithInline(p).(downloader.Previewer); ok {
 		t.Error("a site without a preview claims inline support")
+	}
+}
+
+func TestDownloadAudio(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeRun{meta: `{"title":"Scramble up ur name","uploader":"scout2015","duration":10}`}
+	m, err := newTestProvider(f, Options{}).DownloadAudio(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Kind != downloader.KindAudio || m.Filename != "6718335390845095173.mp3" {
+		t.Errorf("unexpected media: kind=%v %q", m.Kind, m.Filename)
+	}
+	if m.Title != "Scramble up ur name" || m.Performer != "scout2015" || m.Duration != 10 {
+		t.Errorf("tags: %q / %q / %d", m.Title, m.Performer, m.Duration)
+	}
+	if args := f.calls[1]; !slices.Contains(args, "-x") || !slices.Contains(args, "--embed-thumbnail") {
+		t.Errorf("yt-dlp not asked for an MP3 with cover: %v", args)
+	}
+
+	// The same duration limit as for video applies.
+	long := &fakeRun{meta: `{"duration":901}`}
+	if _, err := newTestProvider(long, Options{}).DownloadAudio(context.Background(), link); !errors.Is(err, downloader.ErrTooLong) {
+		t.Errorf("err = %v, want ErrTooLong", err)
+	}
+}
+
+func TestRichInlinePreview(t *testing.T) {
+	t.Parallel()
+
+	const tiktokLink = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+	long := strings.Repeat("words ", 40)
+
+	f := &fakeRun{meta: `{"title":"` + long + `","thumbnail":"https://p16.tiktokcdn.com/cover.jpeg","uploader":"scout2015"}`}
+	p := WithInline(New(ytdlp.NewWithRunner(f.run, 1), TikTok(), Options{})).(downloader.Previewer)
+
+	got, ok := p.Preview(context.Background(), tiktokLink)
+	if !ok {
+		t.Fatal("no preview")
+	}
+	if got.ThumbnailURL != "https://p16.tiktokcdn.com/cover.jpeg" {
+		t.Errorf("thumbnail = %q, want the cover", got.ThumbnailURL)
+	}
+	if !strings.HasPrefix(got.Title, "words words") || len([]rune(got.Title)) > maxPreviewTitle {
+		t.Errorf("title = %q, want the real title, at most %d characters", got.Title, maxPreviewTitle)
+	}
+	if got.Description != "@scout2015 · Tap to download" {
+		t.Errorf("description = %q", got.Description)
+	}
+
+	// When the lookup fails, the URL-based row is still offered.
+	failing := &fakeRun{err: errors.New("yt-dlp: exit status 1: ERROR: blocked")}
+	fp := WithInline(New(ytdlp.NewWithRunner(failing.run, 1), TikTok(), Options{})).(downloader.Previewer)
+	got, ok = fp.Preview(context.Background(), tiktokLink)
+	if !ok || got.Title != "TikTok video" || got.ThumbnailURL != "" {
+		t.Errorf("fallback preview = %+v, %v", got, ok)
+	}
+}
+
+func TestPreviewDoesNotWaitForBusySlots(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeRun{meta: `{"title":"should not be looked up"}`}
+	prov := New(ytdlp.NewWithRunner(f.run, 1), TikTok(), Options{})
+	for range previewSlots {
+		prov.previews <- struct{}{} // every slot taken
+	}
+	got, ok := WithInline(prov).(downloader.Previewer).Preview(context.Background(), "https://www.tiktok.com/@a/video/6718335390845095173")
+	if !ok || got.Title != "TikTok video" || len(f.calls) != 0 {
+		t.Errorf("preview with busy slots = %+v, %v, %d yt-dlp runs; want the instant URL-based row", got, ok, len(f.calls))
+	}
+}
+
+func TestSlowPreviewIsCachedForTheNextQuery(t *testing.T) {
+	t.Parallel()
+
+	const tiktokLink = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+	f := &fakeRun{meta: `{"title":"Real title","thumbnail":"https://p16.tiktokcdn.com/cover.jpeg"}`, delay: 300 * time.Millisecond}
+	prov := New(ytdlp.NewWithRunner(f.run, 1), TikTok(), Options{})
+	prov.previewWait = 30 * time.Millisecond // much shorter than the lookup
+	p := WithInline(prov).(downloader.Previewer)
+
+	// The first query can't wait for the lookup: it gets the URL-based row now.
+	first, _ := p.Preview(context.Background(), tiktokLink)
+	if first.Title != "TikTok video" || first.ThumbnailURL != "" {
+		t.Fatalf("first preview = %+v, want the instant URL-based row", first)
+	}
+
+	// The lookup finishes in the background...
+	deadline := time.Now().Add(5 * time.Second)
+	for f.runs() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // let it store the result
+
+	// ...so the next query gets the title and cover straight from the cache.
+	second, _ := p.Preview(context.Background(), tiktokLink)
+	if second.Title != "Real title" || second.ThumbnailURL != "https://p16.tiktokcdn.com/cover.jpeg" {
+		t.Errorf("second preview = %+v, want the cached title and cover", second)
+	}
+	if n := f.runs(); n != 1 {
+		t.Errorf("yt-dlp ran %d times, want 1 (the cache must be used)", n)
+	}
+}
+
+func TestConcurrentPreviewsShareOneLookup(t *testing.T) {
+	t.Parallel()
+
+	const tiktokLink = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+	f := &fakeRun{meta: `{"title":"Shared"}`, delay: 100 * time.Millisecond}
+	p := WithInline(New(ytdlp.NewWithRunner(f.run, 1), TikTok(), Options{})).(downloader.Previewer)
+
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got, _ := p.Preview(context.Background(), tiktokLink); got.Title != "Shared" {
+				t.Errorf("preview title = %q, want Shared", got.Title)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := f.runs(); n != 1 {
+		t.Errorf("yt-dlp ran %d times for 5 identical queries, want 1", n)
 	}
 }
