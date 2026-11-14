@@ -31,6 +31,10 @@ type Config struct {
 	YtDlpCookies string
 	// YtDlpProxy optionally routes yt-dlp through a proxy (http, https, socks5).
 	YtDlpProxy string
+	// FetchProxy optionally routes the bot's own web requests (Pinterest, X,
+	// previews) through a proxy. Telegram's API is never proxied. (Not named
+	// HTTPS_PROXY: Docker treats that name specially during image builds.)
+	FetchProxy string
 	// InstagramCookies is an optional path to a Netscape cookies.txt from a
 	// logged-in browser, needed for Instagram posts that require login.
 	InstagramCookies string
@@ -189,12 +193,19 @@ func load(getenv func(string) string) (Config, error) {
 		}
 	}
 
-	if v := strings.TrimSpace(getenv("YTDLP_PROXY")); v != "" {
-		if u, err := url.Parse(v); err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks4", "socks5", "socks5h"}, u.Scheme) {
-			errs = append(errs, errors.New("YTDLP_PROXY: must look like http://host:port or socks5://host:port"))
-		} else {
-			cfg.YtDlpProxy = v
+	for _, p := range []struct {
+		env string
+		dst *string
+	}{{"YTDLP_PROXY", &cfg.YtDlpProxy}, {"FETCH_PROXY", &cfg.FetchProxy}} {
+		v := strings.TrimSpace(getenv(p.env))
+		if v == "" {
+			continue
 		}
+		if u, err := url.Parse(v); err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks4", "socks5", "socks5h"}, u.Scheme) {
+			errs = append(errs, fmt.Errorf("%s: must look like http://host:port or socks5://host:port", p.env))
+			continue
+		}
+		*p.dst = v
 	}
 
 	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {

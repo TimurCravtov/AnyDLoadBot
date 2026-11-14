@@ -18,9 +18,10 @@ services:
       YTDLP_PROXY: ${YTDLP_PROXY:-socks5://warp:1080}
       # The bot's own web requests (Pinterest, X, previews) go through WARP too,
       # because sites serve server IPs stripped-down pages. Telegram's API stays
-      # direct. Set HTTPS_PROXY to an empty value to turn this off.
-      HTTPS_PROXY: ${HTTPS_PROXY-socks5://warp:1080}
-      NO_PROXY: ${NO_PROXY-api.telegram.org,localhost,127.0.0.1}
+      # direct. Set FETCH_PROXY to an empty value to turn this off.
+      # (Deliberately not HTTPS_PROXY: Coolify passes variables to image builds,
+      # and Docker would then try to pull base images through "warp".)
+      FETCH_PROXY: ${FETCH_PROXY-socks5://warp:1080}
       # Optional cookies.txt paths inside the container (needs a volume added to
       # this file). Empty means "not used".
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}

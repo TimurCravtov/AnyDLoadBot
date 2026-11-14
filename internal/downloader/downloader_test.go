@@ -108,3 +108,42 @@ func TestFetcherLocation(t *testing.T) {
 		t.Errorf("Location(/long) = %q, %v; want empty for a non-redirect", loc, err)
 	}
 }
+
+// TestSetProxy is not parallel: it changes the package-wide proxy, and Go runs
+// it while all parallel tests are paused.
+func TestSetProxy(t *testing.T) {
+	var gotURL atomic.Value
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL.Store(r.URL.String()) // a proxy receives the absolute URL
+		_, _ = w.Write([]byte("via proxy"))
+	}))
+	t.Cleanup(proxySrv.Close)
+
+	if err := SetProxy(proxySrv.URL); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = SetProxy("") })
+
+	f := NewFetcher(func(string) bool { return true })
+	data, err := f.Get(context.Background(), "http://example.invalid/some/path", 100, "text/plain")
+	if err != nil || string(data) != "via proxy" {
+		t.Fatalf("Get through proxy = %q, %v", data, err)
+	}
+	if got, _ := gotURL.Load().(string); got != "http://example.invalid/some/path" {
+		t.Errorf("proxy saw %q", got)
+	}
+
+	if err := SetProxy("not a url"); err == nil || strings.Contains(err.Error(), "not a url") {
+		t.Errorf("SetProxy(invalid) = %v; want an error that does not echo the value", err)
+	}
+
+	// Back to direct: a Fetcher created now must not use the proxy.
+	if err := SetProxy(""); err != nil {
+		t.Fatal(err)
+	}
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("direct")) }))
+	t.Cleanup(direct.Close)
+	if data, err := NewFetcher(func(string) bool { return true }).Get(context.Background(), direct.URL, 100, "text/plain"); err != nil || string(data) != "direct" {
+		t.Errorf("after reset: %q, %v", data, err)
+	}
+}

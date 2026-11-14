@@ -42,6 +42,10 @@ func TestLoad(t *testing.T) {
 				YtDlpCookies: "/run/cookies.txt", YtDlpProxy: "socks5://10.0.0.1:1080",
 			},
 		},
+		{name: "fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "socks5://warp:1080"}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, FetchProxy: "socks5://warp:1080",
+		}},
+		{name: "bad fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "warp:1080"}, wantErr: true},
 		{name: "proxy without scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "10.0.0.1:1080"}, wantErr: true},
 		{name: "proxy with a strange scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "ftp://10.0.0.1"}, wantErr: true},
 		{name: "bad user limit", env: map[string]string{"BOT_TOKEN": "t", "MAX_USER_DOWNLOADS": "0"}, wantErr: true},

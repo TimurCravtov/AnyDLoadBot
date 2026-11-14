@@ -6,8 +6,39 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sync/atomic"
 	"time"
 )
+
+// proxy is the proxy every Fetcher uses; see SetProxy.
+var proxy atomic.Pointer[func(*http.Request) (*url.URL, error)]
+
+// SetProxy routes the requests of Fetchers created afterwards through a proxy
+// (http, https or socks5 URL), for example so sites that serve server IPs a
+// stripped-down page see another address. An empty value restores the default,
+// which honours the standard HTTPS_PROXY environment variables. Call it once at
+// startup, before creating providers.
+func SetProxy(raw string) error {
+	if raw == "" {
+		proxy.Store(nil)
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return errors.New("invalid proxy URL") // the URL may hold credentials: don't echo it
+	}
+	f := http.ProxyURL(u)
+	proxy.Store(&f)
+	return nil
+}
+
+func currentProxy() func(*http.Request) (*url.URL, error) {
+	if p := proxy.Load(); p != nil {
+		return *p
+	}
+	return http.ProxyFromEnvironment
+}
 
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
@@ -21,8 +52,12 @@ type Fetcher struct {
 // NewFetcher creates a Fetcher that follows redirects only to hosts for which
 // allowHost returns true.
 func NewFetcher(allowHost func(host string) bool) *Fetcher {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = currentProxy()
+
 	return &Fetcher{client: &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout:   60 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -54,6 +55,15 @@ func run() error {
 // newProviders builds the registry of supported sites. To support another site,
 // implement downloader.Provider and add it here.
 func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
+	// Must happen before any provider (and so any Fetcher) is created.
+	if cfg.FetchProxy != "" {
+		if err := downloader.SetProxy(cfg.FetchProxy); err != nil {
+			log.Error("FETCH_PROXY not applied", "err", err)
+		} else if u, err := url.Parse(cfg.FetchProxy); err == nil {
+			log.Info("web requests go through a proxy", "proxy", u.Host) // host only: no credentials
+		}
+	}
+
 	// YouTube, Instagram and Spotify need yt-dlp and ffmpeg; without them, run
 	// without those sites.
 	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy})
