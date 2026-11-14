@@ -54,12 +54,17 @@ func run() error {
 // newProviders builds the registry of supported sites. To support another site,
 // implement downloader.Provider and add it here.
 func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
-	// These sites need nothing but HTTP.
-	providers := []downloader.Provider{pinterest.New(), twitter.New()}
-
 	// YouTube, Instagram and Spotify need yt-dlp and ffmpeg; without them, run
 	// without those sites.
 	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy})
+
+	// These sites need nothing but HTTP; Pinterest can also offer MP3 when yt-dlp is there.
+	var pin downloader.Provider = pinterest.New()
+	if err == nil {
+		pin = pinterest.WithAudio(pinterest.New(), yt)
+	}
+	providers := []downloader.Provider{pin, twitter.New()}
+
 	if err != nil {
 		log.Warn("YouTube, Instagram and Spotify support disabled", "err", err)
 	} else {

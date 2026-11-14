@@ -105,7 +105,7 @@ func (b *Bot) directResult(ctx context.Context, results []models.InlineQueryResu
 			Caption:      truncate(src.Title, maxCaptionRunes),
 		})
 	}
-	return append(results, &models.InlineQueryResultVideo{
+	results = append(results, &models.InlineQueryResultVideo{
 		ID:           id,
 		VideoURL:     src.URL,
 		MimeType:     src.MimeType,
@@ -113,6 +113,14 @@ func (b *Bot) directResult(ctx context.Context, results []models.InlineQueryResu
 		Title:        src.Title,
 		Caption:      truncate(src.Title, maxCaptionRunes),
 	})
+
+	// A direct-link site that can also extract audio gets an MP3 row. Unlike the
+	// video, the MP3 has to be made first, so it uses the placeholder flow (and
+	// needs the storage chat).
+	if _, ok := provider.(downloader.AudioDownloader); ok && b.storageChatID != 0 {
+		results = append(results, placeholder(mp3Prefix, "🎵 MP3 · "+src.Title, "Audio only", "⏳ Preparing MP3…", src.ThumbnailURL, link))
+	}
+	return results
 }
 
 // Placeholder result IDs start with the format, so handleChosenInline knows what

@@ -54,8 +54,9 @@ type Provider struct {
 }
 
 var (
-	_ downloader.Provider  = (*Provider)(nil)
-	_ downloader.Previewer = (*Provider)(nil)
+	_ downloader.Provider        = (*Provider)(nil)
+	_ downloader.Previewer       = (*Provider)(nil)
+	_ downloader.AudioDownloader = (*Provider)(nil)
 )
 
 // New creates an Instagram provider on top of a shared yt-dlp client.
@@ -78,7 +79,7 @@ func (*Provider) Name() string { return "Instagram" }
 
 // Description implements downloader.Describer.
 func (*Provider) Description() string {
-	return "reels, videos and images from public posts (first item of a carousel)"
+	return `reels, videos and images from public posts (first item of a carousel); add "mp3" after the link for the sound`
 }
 
 func isInstagramHost(host string) bool {
@@ -166,6 +167,46 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	default:
 		return nil, err
 	}
+}
+
+// DownloadAudio implements downloader.AudioDownloader: the post's sound as MP3,
+// with the title and cover embedded. Image posts and silent videos have no
+// audio and return downloader.ErrNoMedia.
+func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.Media, error) {
+	if _, ok := parsePostID(link); !ok {
+		return nil, fmt.Errorf("not an Instagram link: %q", link)
+	}
+
+	release, err := p.yt.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	var extra []string
+	if p.cookies != "" {
+		extra = []string{"--cookies", p.cookies}
+	}
+
+	meta, err := p.yt.Probe(ctx, link, extra...)
+	if err != nil {
+		if noVideoRe.MatchString(err.Error()) {
+			return nil, fmt.Errorf("%w: image posts have no audio", downloader.ErrNoMedia)
+		}
+		return nil, err
+	}
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Extra: extra})
+	if err != nil {
+		return nil, err
+	}
+	return &downloader.Media{
+		Kind:      downloader.KindAudio,
+		Filename:  file.Name,
+		Data:      file.Data,
+		Title:     meta.Title,
+		Performer: meta.Uploader,
+		Duration:  int(meta.Duration),
+	}, nil
 }
 
 // image downloads the post's picture (the first one, for carousels).

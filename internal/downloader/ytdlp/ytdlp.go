@@ -30,6 +30,8 @@ var unavailable = []string{
 	"sign in to confirm your age", "age-restricted", "has been removed", "not available in your country",
 	"live event will begin", "premieres in", "this content isn't available", "login required",
 	"requested content is not available", "no video could be found", "ip address is blocked",
+	// ffmpeg, when asked for audio from a video that has none.
+	"does not contain any stream", "unable to obtain file audio codec",
 }
 
 // Runner executes yt-dlp with args and returns its stdout.

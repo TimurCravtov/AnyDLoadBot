@@ -2,11 +2,14 @@ package ytdlp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
+
+	"anydloadbot/internal/downloader"
 )
 
 // recorder is a Runner that remembers its arguments and the contents of any
@@ -184,5 +187,21 @@ func TestLinkIsNeverTreatedAsCookiesOption(t *testing.T) {
 	args := r.calls[0]
 	if args[len(args)-2] != "--" || args[len(args)-1] != "--cookies" || len(r.paths) != 0 {
 		t.Errorf("link handled as an option: %v", args)
+	}
+}
+
+func TestClassifySilentVideoIsNoMedia(t *testing.T) {
+	t.Parallel()
+
+	for _, msg := range []string{
+		"yt-dlp: exit status 1: ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe",
+		"yt-dlp: exit status 1: ERROR: Postprocessing: Output file #0 does not contain any stream",
+	} {
+		if err := Classify(errors.New(msg)); !errors.Is(err, downloader.ErrNoMedia) {
+			t.Errorf("Classify(%q) = %v, want ErrNoMedia", msg, err)
+		}
+	}
+	if err := Classify(errors.New("yt-dlp: exit status 1: ERROR: network unreachable")); errors.Is(err, downloader.ErrNoMedia) {
+		t.Error("an unrelated failure was classified as no media")
 	}
 }
