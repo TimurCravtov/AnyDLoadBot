@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"anydloadbot/internal/downloader"
 )
 
 var (
@@ -24,6 +26,14 @@ func TikTok() Site {
 		Name:        "TikTok",
 		Description: "videos",
 		NoCaption:   true, // TikTok's title is the whole video description
+		Preview: func(u *url.URL) *downloader.Preview {
+			// /@author/video/<id> names the author; short links don't.
+			desc := "Tap to download"
+			if parts := segments(u); len(parts) > 0 && strings.HasPrefix(parts[0], "@") && len(parts[0]) > 1 {
+				desc = parts[0] + " · " + desc
+			}
+			return &downloader.Preview{Title: "TikTok video", Description: desc}
+		},
 		Match: func(u *url.URL) bool {
 			host, parts := strings.ToLower(u.Hostname()), segments(u)
 			switch host {
@@ -48,6 +58,13 @@ func Reddit() Site {
 	return Site{
 		Name:        "Reddit",
 		Description: "video posts",
+		Preview: func(u *url.URL) *downloader.Preview {
+			desc := "Tap to download"
+			if parts := segments(u); len(parts) > 1 && parts[0] == "r" {
+				desc = "r/" + parts[1] + " · " + desc
+			}
+			return &downloader.Preview{Title: "Reddit video", Description: desc}
+		},
 		Match: func(u *url.URL) bool {
 			host, parts := strings.ToLower(u.Hostname()), segments(u)
 			switch {

@@ -72,12 +72,12 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 			youtube.New(yt, youtube.Options{}),
 			instagram.New(yt, instagram.Options{Cookies: cfg.InstagramCookies}),
 			spotify.New(yt, spotify.Options{}),
-			ytdlpsite.New(yt, ytdlpsite.TikTok(), ytdlpsite.Options{}),
+			ytdlpsite.WithInline(ytdlpsite.New(yt, ytdlpsite.TikTok(), ytdlpsite.Options{})),
 		)
 
 		// Reddit refuses anonymous requests, so it is only enabled with a logged-in cookies.txt.
 		if cfg.RedditCookies != "" {
-			providers = append(providers, ytdlpsite.New(yt, ytdlpsite.Reddit(), ytdlpsite.Options{Cookies: cfg.RedditCookies}))
+			providers = append(providers, ytdlpsite.WithInline(ytdlpsite.New(yt, ytdlpsite.Reddit(), ytdlpsite.Options{Cookies: cfg.RedditCookies})))
 		} else {
 			log.Info("Reddit support disabled: set REDDIT_COOKIES to a logged-in cookies.txt to enable it")
 		}

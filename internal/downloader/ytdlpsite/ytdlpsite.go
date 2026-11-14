@@ -41,6 +41,10 @@ type Site struct {
 	// NoCaption sends the video without a caption. Use it for sites whose
 	// "title" is just a long description (TikTok).
 	NoCaption bool
+	// Preview, if set, describes a link for its inline-mode result row. It must
+	// not do network I/O (inline queries have to be answered quickly); work it
+	// out from the URL. Sites with a Preview work in inline mode.
+	Preview func(u *url.URL) *downloader.Preview
 }
 
 // Options configures a Provider.
@@ -70,6 +74,32 @@ func New(yt *ytdlp.Client, site Site, opts Options) *Provider {
 		opts.MaxDuration = DefaultMaxDuration
 	}
 	return &Provider{yt: yt, site: site, maxDuration: opts.MaxDuration, cookies: opts.Cookies}
+}
+
+// WithInline returns p as a downloader.Previewer when its site has a Preview,
+// so it works in inline mode; otherwise it returns p unchanged. Register the
+// result rather than p itself.
+func WithInline(p *Provider) downloader.Provider {
+	if p.site.Preview == nil {
+		return p
+	}
+	return &inlineProvider{Provider: p}
+}
+
+type inlineProvider struct{ *Provider }
+
+var _ downloader.Previewer = (*inlineProvider)(nil)
+
+// Preview implements downloader.Previewer.
+func (p *inlineProvider) Preview(_ context.Context, link string) (*downloader.Preview, bool) {
+	if _, ok := p.FindURL(link); !ok {
+		return nil, false
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return nil, false
+	}
+	return p.site.Preview(u), true
 }
 
 // Name implements downloader.Provider.

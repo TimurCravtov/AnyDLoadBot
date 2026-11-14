@@ -212,3 +212,51 @@ func TestCaptionKeptForSitesThatWantIt(t *testing.T) {
 		t.Errorf("Reddit title = %q, want the post title as caption", m.Title)
 	}
 }
+
+func TestInlinePreview(t *testing.T) {
+	t.Parallel()
+
+	tiktok, ok := WithInline(New(nil, TikTok(), Options{})).(downloader.Previewer)
+	if !ok {
+		t.Fatal("TikTok is not inline-capable")
+	}
+	reddit, ok := WithInline(New(nil, Reddit(), Options{})).(downloader.Previewer)
+	if !ok {
+		t.Fatal("Reddit is not inline-capable")
+	}
+
+	tests := []struct {
+		p           downloader.Previewer
+		link        string
+		title, desc string
+	}{
+		{tiktok, "https://www.tiktok.com/@kotlyarenko.narezki/video/7701025806121717024", "TikTok video", "@kotlyarenko.narezki · Tap to download"},
+		{tiktok, "https://vm.tiktok.com/ZMhAbCdEf/", "TikTok video", "Tap to download"},
+		{reddit, "https://www.reddit.com/r/videos/comments/6rrwyj/x/", "Reddit video", "r/videos · Tap to download"},
+		{reddit, "https://v.redd.it/zv89llsvexdz", "Reddit video", "Tap to download"},
+	}
+	for _, tt := range tests {
+		got, ok := tt.p.Preview(context.Background(), tt.link)
+		if !ok || got.Title != tt.title || got.Description != tt.desc {
+			t.Errorf("Preview(%q) = %+v, %v; want %q / %q", tt.link, got, ok, tt.title, tt.desc)
+		}
+	}
+
+	if _, ok := tiktok.Preview(context.Background(), "https://example.com/@u/video/1"); ok {
+		t.Error("Preview accepted a foreign link")
+	}
+}
+
+func TestWithInlineWithoutPreviewIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	site := TikTok()
+	site.Preview = nil
+	p := New(nil, site, Options{})
+	if got := WithInline(p); got != downloader.Provider(p) {
+		t.Errorf("WithInline changed a site without a preview: %T", got)
+	}
+	if _, ok := WithInline(p).(downloader.Previewer); ok {
+		t.Error("a site without a preview claims inline support")
+	}
+}
