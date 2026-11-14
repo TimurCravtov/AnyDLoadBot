@@ -1,12 +1,11 @@
 package bot
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
+	"strings"
 	"time"
 
 	tgbot "github.com/go-telegram/bot"
@@ -22,8 +21,8 @@ const (
 	inlineCacheOK    = 300
 	inlineCacheEmpty = 5
 
-	downloadingCaption = "⏳ Downloading…"
-	editTimeout        = 15 * time.Second
+	downloadingText = "⏳ Downloading…"
+	editTimeout     = 15 * time.Second
 )
 
 func isInlineQuery(u *models.Update) bool        { return u.InlineQuery != nil }
@@ -72,7 +71,7 @@ func (b *Bot) inlineResults(ctx context.Context, query string) []models.InlineQu
 		return b.directResult(ctx, results, provider, resolver, link)
 	}
 	if previewer, ok := provider.(downloader.Previewer); ok && b.storageChatID != 0 {
-		return b.placeholderResult(ctx, results, previewer, link)
+		return b.placeholderResults(ctx, results, provider, previewer, link)
 	}
 
 	b.log.Debug("provider does not support inline mode", "provider", provider.Name())
@@ -91,21 +90,40 @@ func (b *Bot) directResult(ctx context.Context, results []models.InlineQueryResu
 		return results
 	}
 	if src.ThumbnailURL == "" {
-		// Telegram rejects inline videos without a thumbnail.
+		// Telegram rejects inline videos and photos without a thumbnail.
 		b.log.Warn("no thumbnail for inline result", "provider", provider.Name(), "link", link)
 		return results
 	}
 
+	id := resultID(src.URL) // result IDs are limited to 64 bytes
+	if src.Kind == downloader.KindPhoto {
+		return append(results, &models.InlineQueryResultPhoto{
+			ID:           id,
+			PhotoURL:     src.URL,
+			ThumbnailURL: src.ThumbnailURL,
+			Title:        src.Title,
+			Caption:      truncate(src.Title, maxCaptionRunes),
+		})
+	}
 	return append(results, &models.InlineQueryResultVideo{
-		ID:           resultID(src.URL), // result IDs are limited to 64 bytes
+		ID:           id,
 		VideoURL:     src.URL,
 		MimeType:     src.MimeType,
 		ThumbnailURL: src.ThumbnailURL,
 		Title:        src.Title,
+		Caption:      truncate(src.Title, maxCaptionRunes),
 	})
 }
 
-func (b *Bot) placeholderResult(ctx context.Context, results []models.InlineQueryResult, previewer downloader.Previewer, link string) []models.InlineQueryResult {
+// Placeholder result IDs start with the format, so handleChosenInline knows what
+// the user picked. The rest is a hash of the link (IDs are limited to 64 bytes).
+const (
+	videoPrefix = "vid:"
+	mp3Prefix   = "mp3:"
+)
+
+// placeholderResults offers the video and, if the provider can extract it, an MP3.
+func (b *Bot) placeholderResults(ctx context.Context, results []models.InlineQueryResult, provider downloader.Provider, previewer downloader.Previewer, link string) []models.InlineQueryResult {
 	ctx, cancel := context.WithTimeout(ctx, inlineTimeout)
 	defer cancel()
 
@@ -114,19 +132,30 @@ func (b *Bot) placeholderResult(ctx context.Context, results []models.InlineQuer
 		return results
 	}
 
-	return append(results, &models.InlineQueryResultPhoto{
-		ID:           resultID(link),
-		PhotoURL:     p.ThumbnailURL,
-		ThumbnailURL: p.ThumbnailURL,
-		Title:        p.Title,
-		Description:  p.Description,
-		Caption:      downloadingCaption,
+	results = append(results, placeholder(videoPrefix, p.Title, p.Description, downloadingText, p.ThumbnailURL, link))
+	if _, ok := provider.(downloader.AudioDownloader); ok {
+		results = append(results, placeholder(mp3Prefix, "🎵 MP3 · "+p.Title, "Audio with title and cover art", "⏳ Preparing MP3…", p.ThumbnailURL, link))
+	}
+	return results
+}
+
+// placeholder is a text row in the results list (thumbnail, title, description).
+// Photo results would render as a bare image grid with no text. When picked it
+// sends a "downloading" text message, which handleChosenInline later replaces
+// with the media (Telegram allows editing a text message into media).
+func placeholder(prefix, title, description, status, thumbnailURL, link string) *models.InlineQueryResultArticle {
+	return &models.InlineQueryResultArticle{
+		ID:                  prefix + resultID(link),
+		Title:               title,
+		Description:         description,
+		ThumbnailURL:        thumbnailURL,
+		InputMessageContent: &models.InputTextMessageContent{MessageText: status},
 		// Telegram only reports inline_message_id (needed to edit the message
 		// later) for messages that carry an inline keyboard.
 		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
 			{Text: "Source", URL: link},
 		}}},
-	})
+	}
 }
 
 func resultID(s string) string {
@@ -146,14 +175,24 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	if !ok {
 		return
 	}
-	log := b.log.With("provider", provider.Name(), "link", link, "user_id", c.From.ID)
+	audio := strings.HasPrefix(c.ResultID, mp3Prefix)
+	download := provider.Download
+	if audio {
+		ad, ok := provider.(downloader.AudioDownloader)
+		if !ok {
+			return
+		}
+		download = ad.DownloadAudio
+	}
+
+	log := b.log.With("provider", provider.Name(), "link", link, "user_id", c.From.ID, "audio", audio)
 	log.Info("inline result chosen, downloading")
 	start := time.Now()
 
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 
-	file, err := b.storedVideo(ctx, api, provider, link)
+	file, err := b.storedMedia(ctx, api, download, link, audio)
 	if err != nil {
 		text, unexpected := failureText(err)
 		if unexpected {
@@ -161,66 +200,57 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 		} else {
 			log.Warn("inline download rejected", "err", err)
 		}
-		b.editCaption(ctx, api, c.InlineMessageID, text)
+		b.editStatus(ctx, api, c.InlineMessageID, text)
 		return
 	}
 
 	_, err = api.EditMessageMedia(ctx, &tgbot.EditMessageMediaParams{
 		InlineMessageID: c.InlineMessageID,
-		Media: &models.InputMediaVideo{
-			Media:             file.fileID,
-			Caption:           truncate(file.title, maxCaptionRunes),
-			SupportsStreaming: true,
-		},
+		Media:           inputMedia(file),
 	})
 	if err != nil {
 		log.Error("edit inline message", "err", err)
-		b.editCaption(ctx, api, c.InlineMessageID, downloadFailed)
+		b.editStatus(ctx, api, c.InlineMessageID, downloadFailed)
 		return
 	}
-	log.Info("inline video sent", "took", time.Since(start).Round(time.Millisecond))
+	log.Info("inline media sent", "took", time.Since(start).Round(time.Millisecond))
 }
 
-// storedVideo downloads the link and uploads it to the storage chat, returning
-// the file_id Telegram assigned. Results are cached per link.
-func (b *Bot) storedVideo(ctx context.Context, api *tgbot.Bot, provider downloader.Provider, link string) (cachedFile, error) {
-	if f, ok := b.files.get(link); ok {
+// storedMedia downloads the link and uploads it to the storage chat, returning
+// the file_id Telegram assigned. Results are cached per link and format.
+func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, download func(context.Context, string) (*downloader.Media, error), link string, audio bool) (cachedFile, error) {
+	key := link
+	if audio {
+		key += "|mp3"
+	}
+	if f, ok := b.files.get(key); ok {
 		return f, nil
 	}
 
-	media, err := provider.Download(ctx, link)
+	media, err := download(ctx, link)
+	if err != nil {
+		return cachedFile{}, err
+	}
+	fileID, err := b.uploadToStorage(ctx, api, media)
 	if err != nil {
 		return cachedFile{}, err
 	}
 
-	msg, err := api.SendVideo(ctx, &tgbot.SendVideoParams{
-		ChatID:              b.storageChatID,
-		Video:               &models.InputFileUpload{Filename: media.Filename, Data: bytes.NewReader(media.Data)},
-		SupportsStreaming:   true,
-		DisableNotification: true,
-	})
-	if err != nil {
-		return cachedFile{}, fmt.Errorf("upload to storage chat: %w", err)
-	}
-	if msg.Video == nil || msg.Video.FileID == "" {
-		return cachedFile{}, errors.New("storage chat reply has no video file_id")
-	}
-
-	f := cachedFile{fileID: msg.Video.FileID, title: media.Title}
-	b.files.put(link, f)
+	f := cachedFile{kind: media.Kind, fileID: fileID, title: media.Title, performer: media.Performer, duration: media.Duration}
+	b.files.put(key, f)
 	return f, nil
 }
 
-// editCaption shows a status/error on the placeholder. It uses its own
-// timeout because the download context may already have expired.
-func (b *Bot) editCaption(ctx context.Context, api *tgbot.Bot, inlineMessageID, text string) {
+// editStatus shows a status or error on the placeholder text message. It uses
+// its own timeout because the download context may already have expired.
+func (b *Bot) editStatus(ctx context.Context, api *tgbot.Bot, inlineMessageID, text string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), editTimeout)
 	defer cancel()
 
-	if _, err := api.EditMessageCaption(ctx, &tgbot.EditMessageCaptionParams{
+	if _, err := api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
 		InlineMessageID: inlineMessageID,
-		Caption:         text,
+		Text:            text,
 	}); err != nil {
-		b.log.Error("edit inline caption", "err", err)
+		b.log.Error("edit inline status", "err", err)
 	}
 }

@@ -1,9 +1,9 @@
 package bot
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,11 +29,15 @@ func (b *Bot) supported() string {
 }
 
 func (b *Bot) handleStart(ctx context.Context, api *tgbot.Bot, u *models.Update) {
-	b.reply(ctx, api, u, "Hi! Send me a link and I'll send the video back.\nSupported sites: "+b.supported()+"\n\nUse /help for more info.")
+	b.reply(ctx, api, u, "Hi! Send me a link and I'll send the video or image back.\nSupported sites: "+b.supported()+"\n\nUse /help for more info.")
 }
 
 func (b *Bot) handleHelp(ctx context.Context, api *tgbot.Bot, u *models.Update) {
-	b.reply(ctx, api, u, "Send me a link to a video and I'll download it.\nSupported sites: "+b.supported()+"\n\nInline: type my @username followed by a link in any chat.\n\n/start - greeting\n/help - this message")
+	text := "Send me a link to a video or image and I'll download it.\nSupported sites: " + b.supported() +
+		"\n\nAdd \"mp3\" after a link to get just the audio (" + b.audioSites() + ")." +
+		"\n\nInline: type my @username followed by a link in any chat." +
+		"\n\n/start - greeting\n/help - this message"
+	b.reply(ctx, api, u, text)
 }
 
 // handleDefault handles every non-command message: it looks for a link that a
@@ -43,44 +47,74 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		return
 	}
 
-	provider, link, ok := b.providers.Find(u.Message.Text + " " + u.Message.Caption)
+	text := u.Message.Text + " " + u.Message.Caption
+	provider, link, ok := b.providers.Find(text)
 	if !ok {
 		b.reply(ctx, api, u, "Send me a link from a supported site ("+b.supported()+"), or use /help.")
 		return
 	}
 
+	// "<link> mp3" asks for the audio track instead of the video.
+	audio := wantsAudio(text)
+	var download func(context.Context, string) (*downloader.Media, error) = provider.Download
+	if audio {
+		ad, ok := provider.(downloader.AudioDownloader)
+		if !ok {
+			b.reply(ctx, api, u, "MP3 isn't available for "+provider.Name()+". It works for: "+b.audioSites()+".")
+			return
+		}
+		download = ad.DownloadAudio
+	}
+
 	chatID := u.Message.Chat.ID
-	log := b.log.With("chat_id", chatID, "provider", provider.Name(), "link", link)
+	log := b.log.With("chat_id", chatID, "provider", provider.Name(), "link", link, "audio", audio)
+	log.Info("download requested")
+	start := time.Now()
 
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 
-	_, _ = api.SendChatAction(ctx, &tgbot.SendChatActionParams{
-		ChatID: chatID,
-		Action: models.ChatActionUploadVideo,
-	})
+	action := models.ChatActionUploadVideo
+	if audio {
+		action = models.ChatActionUploadVoice
+	}
+	_, _ = api.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: action})
 
-	media, err := provider.Download(ctx, link)
+	media, err := download(ctx, link)
 	if err != nil {
 		text, unexpected := failureText(err)
 		if unexpected {
-			log.Error("download video", "err", err)
+			log.Error("download failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
+		} else {
+			log.Warn("download rejected", "err", err)
 		}
 		b.reply(ctx, api, u, text)
 		return
 	}
 
-	_, err = api.SendVideo(ctx, &tgbot.SendVideoParams{
-		ChatID:            chatID,
-		Video:             &models.InputFileUpload{Filename: media.Filename, Data: bytes.NewReader(media.Data)},
-		Caption:           truncate(media.Title, maxCaptionRunes),
-		SupportsStreaming: true,
-		ReplyParameters:   &models.ReplyParameters{MessageID: u.Message.ID},
-	})
-	if err != nil {
-		log.Error("send video", "err", err)
+	if err := b.sendMedia(ctx, api, chatID, u.Message.ID, media); err != nil {
+		log.Error("send media", "err", err)
 		b.reply(ctx, api, u, downloadFailed)
+		return
 	}
+	log.Info("media sent", "kind", media.Kind, "bytes", len(media.Data), "took", time.Since(start).Round(time.Millisecond))
+}
+
+var (
+	mp3Word = regexp.MustCompile(`(?i)(^|[^\pL\pN])mp3($|[^\pL\pN])`)
+	urlRe   = regexp.MustCompile(`https?://\S+`)
+)
+
+// wantsAudio reports whether the message asks for MP3, e.g. "<link> mp3".
+// Links are ignored so a URL that happens to contain "mp3" doesn't count.
+func wantsAudio(text string) bool { return mp3Word.MatchString(urlRe.ReplaceAllString(text, " ")) }
+
+// audioSites lists the providers that can extract MP3.
+func (b *Bot) audioSites() string {
+	return strings.Join(b.providers.NamesWhere(func(p downloader.Provider) bool {
+		_, ok := p.(downloader.AudioDownloader)
+		return ok
+	}), ", ")
 }
 
 // failureText maps a download error to a user-facing message. unexpected is

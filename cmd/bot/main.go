@@ -12,8 +12,11 @@ import (
 	"anydloadbot/internal/bot"
 	"anydloadbot/internal/config"
 	"anydloadbot/internal/downloader"
+	"anydloadbot/internal/downloader/instagram"
 	"anydloadbot/internal/downloader/pinterest"
+	"anydloadbot/internal/downloader/twitter"
 	"anydloadbot/internal/downloader/youtube"
+	"anydloadbot/internal/downloader/ytdlp"
 )
 
 func main() {
@@ -48,14 +51,19 @@ func run() error {
 // newProviders builds the registry of supported sites. To support another site,
 // implement downloader.Provider and add it here.
 func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
-	providers := []downloader.Provider{pinterest.New()}
+	// These sites need nothing but HTTP.
+	providers := []downloader.Provider{pinterest.New(), twitter.New()}
 
-	// YouTube needs external tools; if they are missing, run without it.
-	yt, err := youtube.New(youtube.Options{YtDlp: cfg.YtDlpPath})
+	// YouTube and Instagram videos need yt-dlp and ffmpeg; without them, run
+	// without those sites.
+	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency)
 	if err != nil {
-		log.Warn("YouTube support disabled", "err", err)
+		log.Warn("YouTube and Instagram support disabled", "err", err)
 	} else {
-		providers = append(providers, yt)
+		providers = append(providers,
+			youtube.New(yt, youtube.Options{}),
+			instagram.New(yt, instagram.Options{Cookies: cfg.InstagramCookies}),
+		)
 	}
 
 	return downloader.NewRegistry(providers...)

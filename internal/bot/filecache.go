@@ -1,6 +1,10 @@
 package bot
 
-import "sync"
+import (
+	"sync"
+
+	"anydloadbot/internal/downloader"
+)
 
 const maxCachedFiles = 1000
 
@@ -14,8 +18,11 @@ type fileCache struct {
 }
 
 type cachedFile struct {
-	fileID string
-	title  string
+	kind      downloader.Kind
+	fileID    string
+	title     string
+	performer string // audio only
+	duration  int    // audio only, seconds
 }
 
 func newFileCache(max int) *fileCache {

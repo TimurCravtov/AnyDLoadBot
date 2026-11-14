@@ -25,9 +25,10 @@ const (
 
 // slowProvider needs a real download (no direct URL) but offers a placeholder.
 type slowProvider struct {
-	mu        sync.Mutex
-	downloads int
-	err       error
+	mu             sync.Mutex
+	downloads      int
+	audioDownloads int
+	err            error
 }
 
 func (*slowProvider) Name() string { return "Slow" }
@@ -56,6 +57,19 @@ func (p *slowProvider) Download(context.Context, string) (*downloader.Media, err
 		return nil, p.err
 	}
 	return &downloader.Media{Filename: "v.mp4", Data: []byte("video"), Title: "A title"}, nil
+}
+
+func (p *slowProvider) DownloadAudio(context.Context, string) (*downloader.Media, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.audioDownloads++
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &downloader.Media{
+		Kind: downloader.KindAudio, Filename: "a.mp3", Data: []byte("audio"),
+		Title: "Song", Performer: "Band", Duration: 187,
+	}, nil
 }
 
 // fakeTelegram records Bot API calls and answers like Telegram would.
@@ -94,11 +108,17 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	if call.method == "sendVideo" {
-		fmt.Fprintf(w, `{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":%d,"type":"private"},"video":{"file_id":%q,"file_unique_id":"u","width":1,"height":1,"duration":1}}}`, storageChat, fakeFileID)
-		return
+	chat := fmt.Sprintf(`"message_id":1,"date":0,"chat":{"id":%d,"type":"private"}`, storageChat)
+	switch call.method {
+	case "sendVideo":
+		fmt.Fprintf(w, `{"ok":true,"result":{%s,"video":{"file_id":%q,"file_unique_id":"u","width":1,"height":1,"duration":1}}}`, chat, fakeFileID)
+	case "sendAudio":
+		fmt.Fprintf(w, `{"ok":true,"result":{%s,"audio":{"file_id":%q,"file_unique_id":"u","duration":1}}}`, chat, fakeFileID)
+	case "sendPhoto":
+		fmt.Fprintf(w, `{"ok":true,"result":{%s,"photo":[{"file_id":"small","file_unique_id":"s","width":1,"height":1},{"file_id":%q,"file_unique_id":"u","width":2,"height":2}]}}`, chat, fakeFileID)
+	default:
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}
-	_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 }
 
 func (f *fakeTelegram) methods() []string {
@@ -150,18 +170,32 @@ func TestPlaceholderResult(t *testing.T) {
 
 	b, _ := newServerBot(t, &slowProvider{})
 	got := b.inlineResults(context.Background(), "slow://abc")
-	if len(got) != 1 {
-		t.Fatalf("got %d results, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2 (video and mp3)", len(got))
 	}
-	ph, ok := got[0].(*models.InlineQueryResultPhoto)
+
+	video, ok := got[0].(*models.InlineQueryResultArticle)
 	if !ok {
-		t.Fatalf("result is %T, want *InlineQueryResultPhoto", got[0])
+		t.Fatalf("result is %T, want a text row (*InlineQueryResultArticle)", got[0])
 	}
-	if ph.Title != "Slow video" || ph.Description != "Some channel" {
-		t.Errorf("title/description not passed through: %q / %q", ph.Title, ph.Description)
+	if video.Title != "Slow video" || video.Description != "Some channel" {
+		t.Errorf("title/description not passed through: %q / %q", video.Title, video.Description)
 	}
-	if ph.PhotoURL != "https://img/abc.jpg" || ph.ReplyMarkup == nil || len(ph.ID) == 0 || len(ph.ID) > 64 {
-		t.Errorf("unexpected placeholder: %+v", ph)
+	if video.ThumbnailURL != "https://img/abc.jpg" || video.ReplyMarkup == nil {
+		t.Errorf("unexpected placeholder: %+v", video)
+	}
+
+	audio := got[1].(*models.InlineQueryResultArticle)
+	if !strings.HasPrefix(video.ID, videoPrefix) || !strings.HasPrefix(audio.ID, mp3Prefix) || video.ID == audio.ID {
+		t.Errorf("result IDs must identify the format: %q, %q", video.ID, audio.ID)
+	}
+	if !strings.Contains(audio.Title, "MP3") || !strings.Contains(audio.Title, "Slow video") {
+		t.Errorf("audio title = %q", audio.Title)
+	}
+	for _, r := range []*models.InlineQueryResultArticle{video, audio} {
+		if len(r.ID) == 0 || len(r.ID) > 64 {
+			t.Errorf("result ID %q must be 1-64 bytes", r.ID)
+		}
 	}
 
 	// Without a storage chat there is nowhere to upload, so no placeholder is offered.
@@ -210,12 +244,12 @@ func TestChosenInlineResultFailure(t *testing.T) {
 	b, tg := newServerBot(t, &slowProvider{err: downloader.ErrTooLong})
 	b.handleChosenInline(context.Background(), b.api, chosen("slow://abc"))
 
-	if got := strings.Join(tg.methods(), ","); got != "editMessageCaption" {
-		t.Fatalf("API calls = %s, want only editMessageCaption", got)
+	if got := strings.Join(tg.methods(), ","); got != "editMessageText" {
+		t.Fatalf("API calls = %s, want only editMessageText", got)
 	}
-	edit, _ := tg.call("editMessageCaption")
-	if !strings.Contains(edit.fields["caption"], tooLongText) {
-		t.Errorf("caption = %q, want the too-long message", edit.fields["caption"])
+	edit, _ := tg.call("editMessageText")
+	if !strings.Contains(edit.fields["text"], tooLongText) {
+		t.Errorf("text = %q, want the too-long message", edit.fields["text"])
 	}
 }
 
@@ -231,5 +265,121 @@ func TestChosenInlineResultIgnored(t *testing.T) {
 
 	if got := tg.methods(); len(got) != 0 {
 		t.Errorf("unexpected API calls: %v", got)
+	}
+}
+
+func TestChosenInlineMP3(t *testing.T) {
+	t.Parallel()
+
+	p := &slowProvider{}
+	b, tg := newServerBot(t, p)
+
+	pick := chosen("slow://abc")
+	pick.ChosenInlineResult.ResultID = mp3Prefix + "whatever"
+	b.handleChosenInline(context.Background(), b.api, pick)
+
+	if got := strings.Join(tg.methods(), ","); got != "sendAudio,editMessageMedia" {
+		t.Fatalf("API calls = %s, want sendAudio,editMessageMedia", got)
+	}
+	if p.downloads != 0 || p.audioDownloads != 1 {
+		t.Errorf("downloads video=%d audio=%d, want 0 and 1", p.downloads, p.audioDownloads)
+	}
+
+	send, _ := tg.call("sendAudio")
+	if send.fields["title"] != "Song" || send.fields["performer"] != "Band" || send.fields["duration"] != "187" {
+		t.Errorf("sendAudio tags: %v", send.fields)
+	}
+	edit, _ := tg.call("editMessageMedia")
+	if !strings.Contains(edit.fields["media"], fakeFileID) || !strings.Contains(edit.fields["media"], `"type":"audio"`) {
+		t.Errorf("editMessageMedia media = %q, want an audio item with the file_id", edit.fields["media"])
+	}
+
+	// The video and the MP3 of the same link are cached separately.
+	b.handleChosenInline(context.Background(), b.api, chosen("slow://abc"))
+	if p.downloads != 1 || p.audioDownloads != 1 {
+		t.Errorf("downloads video=%d audio=%d, want 1 and 1", p.downloads, p.audioDownloads)
+	}
+}
+
+// photoProvider returns a single image, like an Instagram or X image post. It
+// deliberately has no DownloadAudio.
+type photoProvider struct{}
+
+func (*photoProvider) Name() string { return "Photo" }
+func (*photoProvider) FindURL(text string) (string, bool) {
+	for _, w := range strings.Fields(text) {
+		if strings.HasPrefix(w, "photo://") {
+			return w, true
+		}
+	}
+	return "", false
+}
+
+func (*photoProvider) Download(context.Context, string) (*downloader.Media, error) {
+	return &downloader.Media{Kind: downloader.KindPhoto, Filename: "p.jpg", Data: []byte("jpeg"), Title: "Cap"}, nil
+}
+
+func TestChosenInlinePhoto(t *testing.T) {
+	t.Parallel()
+
+	b, tg := newServerBot(t, &photoProvider{})
+	b.handleChosenInline(context.Background(), b.api, chosen("photo://x"))
+
+	if got := strings.Join(tg.methods(), ","); got != "sendPhoto,editMessageMedia" {
+		t.Fatalf("API calls = %s, want sendPhoto,editMessageMedia", got)
+	}
+	edit, _ := tg.call("editMessageMedia")
+	// The file_id must be the largest photo size, not the first.
+	if !strings.Contains(edit.fields["media"], fakeFileID) || !strings.Contains(edit.fields["media"], `"type":"photo"`) {
+		t.Errorf("editMessageMedia media = %q", edit.fields["media"])
+	}
+}
+
+func TestChatSendsByKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		prov downloader.Provider
+		want string
+	}{
+		{"video", "slow://abc", &slowProvider{}, "sendChatAction,sendVideo"},
+		{"mp3 keyword", "slow://abc mp3", &slowProvider{}, "sendChatAction,sendAudio"},
+		{"MP3 uppercase before link", "MP3 slow://abc", &slowProvider{}, "sendChatAction,sendAudio"},
+		{"photo", "photo://x", &photoProvider{}, "sendChatAction,sendPhoto"},
+		{"mp3 unsupported", "photo://x mp3", &photoProvider{}, "sendMessage"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b, tg := newServerBot(t, tt.prov)
+			b.handleDefault(context.Background(), b.api, &models.Update{Message: &models.Message{
+				ID: 9, Text: tt.text, Chat: models.Chat{ID: 77},
+			}})
+			if got := strings.Join(tg.methods(), ","); got != tt.want {
+				t.Errorf("API calls = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWantsAudio(t *testing.T) {
+	t.Parallel()
+
+	for text, want := range map[string]bool{
+		"https://youtu.be/x mp3":                  true,
+		"mp3 https://youtu.be/x":                  true,
+		"https://youtu.be/x MP3":                  true,
+		"https://youtu.be/x, mp3!":                true,
+		"https://youtu.be/x":                      false,
+		"https://example.com/dark-mp3-mix":        false, // inside a URL
+		"https://youtu.be/x mp3player":            false,
+		"https://youtu.be/x https://a.com/b mp3x": false,
+	} {
+		if got := wantsAudio(text); got != want {
+			t.Errorf("wantsAudio(%q) = %v, want %v", text, got, want)
+		}
 	}
 }

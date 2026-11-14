@@ -23,6 +23,9 @@ type Config struct {
 	LogJSON bool
 	// YtDlpPath is the yt-dlp executable used for YouTube downloads.
 	YtDlpPath string
+	// InstagramCookies is an optional path to a Netscape cookies.txt from a
+	// logged-in browser, needed for Instagram posts that require login.
+	InstagramCookies string
 	// StorageChatID is a private chat the bot uploads videos to for inline mode
 	// (0 = disabled). See bot.WithStorageChat.
 	StorageChatID int64
@@ -62,6 +65,8 @@ func load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("LOG_LEVEL: %w", err))
 		}
 	}
+
+	cfg.InstagramCookies = strings.TrimSpace(getenv("INSTAGRAM_COOKIES"))
 
 	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
