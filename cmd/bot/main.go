@@ -14,9 +14,11 @@ import (
 	"anydloadbot/internal/downloader"
 	"anydloadbot/internal/downloader/instagram"
 	"anydloadbot/internal/downloader/pinterest"
+	"anydloadbot/internal/downloader/spotify"
 	"anydloadbot/internal/downloader/twitter"
 	"anydloadbot/internal/downloader/youtube"
 	"anydloadbot/internal/downloader/ytdlp"
+	"anydloadbot/internal/downloader/ytdlpsite"
 )
 
 func main() {
@@ -39,7 +41,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, bot.WithStorageChat(cfg.StorageChatID))
+	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, bot.WithStorageChat(cfg.StorageChatID),
+		bot.WithLimits(cfg.MaxUserDownloads, cfg.MaxTotalDownloads))
 	if err != nil {
 		return err
 	}
@@ -54,16 +57,25 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 	// These sites need nothing but HTTP.
 	providers := []downloader.Provider{pinterest.New(), twitter.New()}
 
-	// YouTube and Instagram videos need yt-dlp and ffmpeg; without them, run
+	// YouTube, Instagram and Spotify need yt-dlp and ffmpeg; without them, run
 	// without those sites.
 	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency)
 	if err != nil {
-		log.Warn("YouTube and Instagram support disabled", "err", err)
+		log.Warn("YouTube, Instagram and Spotify support disabled", "err", err)
 	} else {
 		providers = append(providers,
 			youtube.New(yt, youtube.Options{}),
 			instagram.New(yt, instagram.Options{Cookies: cfg.InstagramCookies}),
+			spotify.New(yt, spotify.Options{}),
+			ytdlpsite.New(yt, ytdlpsite.TikTok(), ytdlpsite.Options{}),
 		)
+
+		// Reddit refuses anonymous requests, so it is only enabled with a logged-in cookies.txt.
+		if cfg.RedditCookies != "" {
+			providers = append(providers, ytdlpsite.New(yt, ytdlpsite.Reddit(), ytdlpsite.Options{Cookies: cfg.RedditCookies}))
+		} else {
+			log.Info("Reddit support disabled: set REDDIT_COOKIES to a logged-in cookies.txt to enable it")
+		}
 	}
 
 	return downloader.NewRegistry(providers...)
