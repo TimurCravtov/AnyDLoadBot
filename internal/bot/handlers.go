@@ -79,13 +79,24 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	// The status message has a Cancel button; it goes away (or turns into
 	// "Cancelled") once the download is over.
 	parent := ctx
-	if status := b.sendStatus(ctx, api, chatID, u.Message.ID); status != 0 {
+	status := b.sendStatus(ctx, api, chatID, u.Message.ID)
+	if status != 0 {
 		job.setKey(chatKey(chatID, status))
 		defer func() { b.endStatus(parent, api, chatID, status, job.wasCancelled()) }()
 	}
 
 	ctx, cancel := context.WithTimeout(job.ctx, downloadTimeout)
 	defer cancel()
+
+	// Live progress in the status message. Deferred last, so it stops before
+	// the status message is removed.
+	if status != 0 {
+		var stop func()
+		ctx, stop = b.startProgress(ctx, func(pctx context.Context, text string) {
+			b.editChatStatus(pctx, api, chatID, status, text)
+		})
+		defer stop()
+	}
 
 	action := models.ChatActionUploadVideo
 	if audio {
@@ -109,7 +120,8 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		return
 	}
 
-	if err := b.sendMedia(ctx, api, chatID, u.Message.ID, media); err != nil {
+	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
+	if err := b.sendMedia(withUpload(ctx), api, chatID, u.Message.ID, media); err != nil {
 		if job.wasCancelled() {
 			log.Info("upload cancelled by the user")
 			return

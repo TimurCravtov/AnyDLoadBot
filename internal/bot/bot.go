@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -21,7 +22,8 @@ type Bot struct {
 	storageChatID int64
 	files         *fileCache
 	jobs          *jobs
-	username      string // set once in Run, before polling starts
+	username      string        // set once in Run, before polling starts
+	progressEvery time.Duration // how often progress is shown; tests shorten it
 }
 
 // Default concurrent-download limits.
@@ -77,6 +79,7 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 		storageChatID: o.storageChatID,
 		files:         newFileCache(maxCachedFiles),
 		jobs:          newJobs(o.maxUser, o.maxTotal),
+		progressEvery: progressInterval,
 	}
 
 	api, err := tgbot.New(token, append([]tgbot.Option{
@@ -91,6 +94,7 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 			log.Error("telegram client error", "err", err)
 		}),
 		tgbot.WithMiddlewares(b.logUpdates),
+		tgbot.WithHTTPClient(apiPollTimeout, newAPIClient()),
 		// Be explicit: if omitted, Telegram silently reuses whatever list was last
 		// set for this token, which can hide inline updates.
 		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{

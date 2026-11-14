@@ -14,7 +14,7 @@ const (
 	// belongs to follows from the message the button is on.
 	cancelData    = "cancel"
 	cancelledText = "✖ Cancelled"
-	statusText    = "⏳ Downloading…"
+	statusText    = "⏳ Preparing…"
 )
 
 func cancelKeyboard() *models.InlineKeyboardMarkup {

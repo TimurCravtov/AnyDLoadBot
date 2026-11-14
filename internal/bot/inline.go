@@ -158,11 +158,16 @@ func placeholder(prefix, title, description, status, thumbnailURL, link string) 
 		InputMessageContent: &models.InputTextMessageContent{MessageText: status},
 		// Telegram only reports inline_message_id (needed to edit the message
 		// later) for messages that carry an inline keyboard.
-		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
-			{Text: "Source", URL: link},
-			{Text: "✖ Cancel", CallbackData: cancelData},
-		}}},
+		ReplyMarkup: placeholderKeyboard(link),
 	}
+}
+
+// placeholderKeyboard is the placeholder's buttons; progress edits keep them.
+func placeholderKeyboard(link string) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: "Source", URL: link},
+		{Text: "✖ Cancel", CallbackData: cancelData},
+	}}}
 }
 
 func resultID(s string) string {
@@ -209,7 +214,14 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	ctx, cancel := context.WithTimeout(job.ctx, downloadTimeout)
 	defer cancel()
 
+	// Live progress in the placeholder, stopped before it is replaced.
+	ctx, stopProgress := b.startProgress(ctx, func(pctx context.Context, text string) {
+		b.editInlineProgress(pctx, api, c.InlineMessageID, link, text)
+	})
+	defer stopProgress()
+
 	file, err := b.storedMedia(ctx, api, download, link, audio)
+	stopProgress()
 	if err != nil {
 		if job.wasCancelled() {
 			log.Info("inline download cancelled by the user")
@@ -253,7 +265,8 @@ func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, download func(con
 	if err != nil {
 		return cachedFile{}, err
 	}
-	fileID, err := b.uploadToStorage(ctx, api, media)
+	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
+	fileID, err := b.uploadToStorage(withUpload(ctx), api, media)
 	if err != nil {
 		return cachedFile{}, err
 	}
