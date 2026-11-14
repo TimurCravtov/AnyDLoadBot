@@ -94,16 +94,44 @@ func (p *Provider) Resolve(ctx context.Context, link string) (*downloader.Source
 		return nil, fmt.Errorf("not a Pinterest link: %q", link)
 	}
 
-	// For a long link, ask the embed widget's JSON first. It is small, and it is
-	// served to visitors that get a login or consent wall instead of the full pin
-	// page (some regions and datacenter IPs). Short pin.it links don't name the
-	// pin, so they go to the page, where the redirect leads.
+	// Ask the embed widget's JSON first. It is small, and it is served to
+	// visitors that get a login or consent wall instead of the full pin page
+	// (some regions and datacenter IPs). It needs the pin's ID: long links name
+	// it, and short pin.it links redirect to an address that does.
+	id := ""
 	if m := pinPath.FindStringSubmatch(u.Path); m != nil {
-		if src, err := p.fromJSON(ctx, p.widget+m[1], maxWidgetSize, "application/json"); err == nil {
+		id = m[1]
+	} else {
+		id = p.pinIDFromRedirects(ctx, link)
+	}
+	if id != "" {
+		if src, err := p.fromJSON(ctx, p.widget+id, maxWidgetSize, "application/json"); err == nil {
 			return src, nil
 		}
 	}
 	return p.fromJSON(ctx, link, maxPageSize, "text/html")
+}
+
+// pinIDFromRedirects follows a link's redirects (pin.it goes through a couple)
+// until one names the pin, without downloading any page. It returns "" if none
+// does or a hop leaves Pinterest.
+func (p *Provider) pinIDFromRedirects(ctx context.Context, link string) string {
+	next := link
+	for range 5 {
+		loc, err := p.fetch.Location(ctx, next)
+		if err != nil || loc == "" {
+			return ""
+		}
+		u, err := url.Parse(loc)
+		if err != nil || !p.allowLink(u.Hostname()) {
+			return ""
+		}
+		if m := pinPath.FindStringSubmatch(u.Path); m != nil {
+			return m[1]
+		}
+		next = loc
+	}
+	return ""
 }
 
 // fromJSON fetches a pin page or widget response and extracts the video from it.

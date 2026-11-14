@@ -214,3 +214,72 @@ func TestResolveNoVideoAnywhere(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoMedia", err)
 	}
 }
+
+func TestResolveShortLinkFindsPinIDFromRedirects(t *testing.T) {
+	t.Parallel()
+
+	var widgetHits, pinPageHits atomic.Int32
+	mux := http.NewServeMux()
+	// pin.it -> url shortener -> /pin/<id>/sent/?invite_code=..., like the real chain.
+	mux.HandleFunc("/AbCdEf", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/url_shortener/AbCdEf/redirect/", http.StatusFound)
+	})
+	mux.HandleFunc("/url_shortener/AbCdEf/redirect/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/pin/1036179826779090032/sent/?invite_code=x&sfo=1", http.StatusFound)
+	})
+	mux.HandleFunc("/pin/", func(w http.ResponseWriter, _ *http.Request) {
+		pinPageHits.Add(1)
+		_, _ = w.Write([]byte(pageWithVideo))
+	})
+	mux.HandleFunc("/v3/pidgets/pins/info/", func(w http.ResponseWriter, r *http.Request) {
+		widgetHits.Add(1)
+		if r.URL.Query().Get("pin_ids") != "1036179826779090032" {
+			http.Error(w, "wrong pin", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(widgetWithVideo))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	p := New()
+	p.fetch = downloader.NewFetcher(func(string) bool { return true })
+	p.widget = srv.URL + "/v3/pidgets/pins/info/?pin_ids="
+	p.allowLink = func(string) bool { return true }
+
+	src, err := p.Resolve(context.Background(), srv.URL+"/AbCdEf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.URL != "https://v1.pinimg.com/videos/iht/expMp4/dd/52/x_720w.mp4" {
+		t.Errorf("URL = %q, want the widget's video", src.URL)
+	}
+	// The pin page itself must never be downloaded on this route.
+	if widgetHits.Load() != 1 || pinPageHits.Load() != 0 {
+		t.Errorf("hits widget=%d pin page=%d, want 1 and 0", widgetHits.Load(), pinPageHits.Load())
+	}
+}
+
+func TestShortLinkRedirectsMustStayOnPinterest(t *testing.T) {
+	t.Parallel()
+
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("followed a redirect off Pinterest")
+	}))
+	t.Cleanup(evil.Close)
+	// The redirect points at another host name ("localhost"), as an attacker's would.
+	evilURL := strings.Replace(evil.URL, "127.0.0.1", "localhost", 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evilURL+"/pin/123456789/", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := New()
+	p.fetch = downloader.NewFetcher(func(string) bool { return true })
+	// Only 127.0.0.1 counts as "Pinterest" here.
+	p.allowLink = func(host string) bool { return host == "127.0.0.1" }
+
+	if id := p.pinIDFromRedirects(context.Background(), srv.URL+"/AbCdEf"); id != "" {
+		t.Errorf("pin ID %q taken from a redirect that left Pinterest", id)
+	}
+}

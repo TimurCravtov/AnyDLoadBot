@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -77,5 +78,33 @@ func TestFetcherGet(t *testing.T) {
 	}
 	if _, err := f.Get(ctx, srv.URL+"/redirect", 100, "text/plain"); err == nil || !strings.Contains(err.Error(), "disallowed host") {
 		t.Errorf("Get(/redirect): err = %v, want disallowed host", err)
+	}
+}
+
+func TestFetcherLocation(t *testing.T) {
+	t.Parallel()
+
+	var followed atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/short", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/long?x=1", http.StatusFound)
+	})
+	mux.HandleFunc("/long", func(w http.ResponseWriter, _ *http.Request) {
+		followed.Store(true)
+		_, _ = w.Write([]byte("page"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	f := NewFetcher(func(string) bool { return true })
+	loc, err := f.Location(context.Background(), srv.URL+"/short")
+	if err != nil || loc != srv.URL+"/long?x=1" {
+		t.Errorf("Location(/short) = %q, %v; want the absolute redirect target", loc, err)
+	}
+	if followed.Load() {
+		t.Error("Location followed the redirect")
+	}
+	if loc, err := f.Location(context.Background(), srv.URL+"/long"); err != nil || loc != "" {
+		t.Errorf("Location(/long) = %q, %v; want empty for a non-redirect", loc, err)
 	}
 }

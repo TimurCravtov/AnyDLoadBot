@@ -35,6 +35,35 @@ func NewFetcher(allowHost func(host string) bool) *Fetcher {
 	}}
 }
 
+// Location makes one request to rawURL without following redirects and returns
+// where it points ("" if the response is not a redirect). Callers follow the
+// chain themselves, so they can stop as soon as they have what they need and
+// check every hop against their own host rules.
+func (f *Fetcher) Location(ctx context.Context, rawURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	client := *f.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return "", nil
+	}
+	loc, err := resp.Location() // resolves relative redirects
+	if err != nil {
+		return "", err
+	}
+	return loc.String(), nil
+}
+
 // FinalURL follows redirects from rawURL and returns where they end, without
 // reading the body. It is used to turn a redirecting "media" endpoint into a
 // stable CDN URL that Telegram can fetch.
