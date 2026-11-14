@@ -16,9 +16,12 @@ import (
 const (
 	noMediaText    = "I couldn't find any downloadable media at that link."
 	tooLargeText   = "That file is too large for Telegram bots (50 MB limit)."
+	tooLongText    = "That video is too long for me to download."
 	downloadFailed = "Sorry, I couldn't download that. Please try again later."
 
-	downloadTimeout = 2 * time.Minute
+	// Long videos need yt-dlp to download and merge streams, which takes a while.
+	downloadTimeout = 5 * time.Minute
+	maxCaptionRunes = 200
 )
 
 func (b *Bot) supported() string {
@@ -30,7 +33,7 @@ func (b *Bot) handleStart(ctx context.Context, api *tgbot.Bot, u *models.Update)
 }
 
 func (b *Bot) handleHelp(ctx context.Context, api *tgbot.Bot, u *models.Update) {
-	b.reply(ctx, api, u, "Send me a link to a video and I'll download it.\nSupported sites: "+b.supported()+"\n\n/start - greeting\n/help - this message")
+	b.reply(ctx, api, u, "Send me a link to a video and I'll download it.\nSupported sites: "+b.supported()+"\n\nInline: type my @username followed by a link in any chat.\n\n/start - greeting\n/help - this message")
 }
 
 // handleDefault handles every non-command message: it looks for a link that a
@@ -59,21 +62,18 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 
 	media, err := provider.Download(ctx, link)
 	if err != nil {
-		switch {
-		case errors.Is(err, downloader.ErrNoMedia):
-			b.reply(ctx, api, u, noMediaText)
-		case errors.Is(err, downloader.ErrTooLarge):
-			b.reply(ctx, api, u, tooLargeText)
-		default:
+		text, unexpected := failureText(err)
+		if unexpected {
 			log.Error("download video", "err", err)
-			b.reply(ctx, api, u, downloadFailed)
 		}
+		b.reply(ctx, api, u, text)
 		return
 	}
 
 	_, err = api.SendVideo(ctx, &tgbot.SendVideoParams{
 		ChatID:            chatID,
 		Video:             &models.InputFileUpload{Filename: media.Filename, Data: bytes.NewReader(media.Data)},
+		Caption:           truncate(media.Title, maxCaptionRunes),
 		SupportsStreaming: true,
 		ReplyParameters:   &models.ReplyParameters{MessageID: u.Message.ID},
 	})
@@ -81,6 +81,29 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		log.Error("send video", "err", err)
 		b.reply(ctx, api, u, downloadFailed)
 	}
+}
+
+// failureText maps a download error to a user-facing message. unexpected is
+// true for errors worth logging (anything but "the video can't be fetched").
+func failureText(err error) (text string, unexpected bool) {
+	switch {
+	case errors.Is(err, downloader.ErrNoMedia):
+		return noMediaText, false
+	case errors.Is(err, downloader.ErrTooLarge):
+		return tooLargeText, false
+	case errors.Is(err, downloader.ErrTooLong):
+		return tooLongText, false
+	default:
+		return downloadFailed, true
+	}
+}
+
+func truncate(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes-1]) + "…"
 }
 
 // reply sends text to the chat the update came from. Updates without a message are ignored.

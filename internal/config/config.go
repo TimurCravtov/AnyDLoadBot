@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -20,6 +21,11 @@ type Config struct {
 	LogLevel slog.Level
 	// LogJSON switches logging from human-readable text to JSON.
 	LogJSON bool
+	// YtDlpPath is the yt-dlp executable used for YouTube downloads.
+	YtDlpPath string
+	// StorageChatID is a private chat the bot uploads videos to for inline mode
+	// (0 = disabled). See bot.WithStorageChat.
+	StorageChatID int64
 }
 
 // Load reads configuration from environment variables, first loading a .env
@@ -40,6 +46,11 @@ func load(getenv func(string) string) (Config, error) {
 		Token:    strings.TrimSpace(getenv("BOT_TOKEN")),
 		LogLevel: slog.LevelInfo,
 		LogJSON:  getenv("LOG_FORMAT") == "json",
+
+		YtDlpPath: "yt-dlp",
+	}
+	if v := strings.TrimSpace(getenv("YTDLP_PATH")); v != "" {
+		cfg.YtDlpPath = v
 	}
 
 	if cfg.Token == "" {
@@ -49,6 +60,15 @@ func load(getenv func(string) string) (Config, error) {
 	if v := getenv("LOG_LEVEL"); v != "" {
 		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
 			errs = append(errs, fmt.Errorf("LOG_LEVEL: %w", err))
+		}
+	}
+
+	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id == 0 {
+			errs = append(errs, fmt.Errorf("STORAGE_CHAT_ID: %q is not a valid chat id", v))
+		} else {
+			cfg.StorageChatID = id
 		}
 	}
 

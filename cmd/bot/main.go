@@ -13,6 +13,7 @@ import (
 	"anydloadbot/internal/config"
 	"anydloadbot/internal/downloader"
 	"anydloadbot/internal/downloader/pinterest"
+	"anydloadbot/internal/downloader/youtube"
 )
 
 func main() {
@@ -35,18 +36,29 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// To support another site, implement downloader.Provider and add it here.
-	providers := downloader.NewRegistry(
-		pinterest.New(),
-	)
-
-	b, err := bot.New(cfg.Token, providers, log)
+	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, bot.WithStorageChat(cfg.StorageChatID))
 	if err != nil {
 		return err
 	}
 
 	b.Run(ctx)
 	return nil
+}
+
+// newProviders builds the registry of supported sites. To support another site,
+// implement downloader.Provider and add it here.
+func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
+	providers := []downloader.Provider{pinterest.New()}
+
+	// YouTube needs external tools; if they are missing, run without it.
+	yt, err := youtube.New(youtube.Options{YtDlp: cfg.YtDlpPath})
+	if err != nil {
+		log.Warn("YouTube support disabled", "err", err)
+	} else {
+		providers = append(providers, yt)
+	}
+
+	return downloader.NewRegistry(providers...)
 }
 
 func newLogger(cfg config.Config) *slog.Logger {
