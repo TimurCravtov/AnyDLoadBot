@@ -3,6 +3,8 @@ package downloader
 import (
 	"context"
 	"io"
+	"sync"
+	"time"
 )
 
 // Stage is the phase a download is in.
@@ -58,4 +60,58 @@ func (p *progressReader) Read(b []byte) (int, error) {
 		Report(p.ctx, Progress{Stage: StageDownloading, Done: p.done, Total: p.total})
 	}
 	return n, err
+}
+
+// StageTimer measures how long a download spends in each stage, for logs.
+type StageTimer struct {
+	mu    sync.Mutex
+	cur   Stage
+	since time.Time
+	spent [StageUploading + 1]time.Duration
+}
+
+// WithStageTimer returns a context whose progress reports also go to a new
+// StageTimer (and still to any ProgressFunc ctx already has). The timer starts
+// in StagePreparing.
+func WithStageTimer(ctx context.Context) (context.Context, *StageTimer) {
+	t := &StageTimer{since: time.Now()}
+	prev, _ := ctx.Value(progressKey{}).(ProgressFunc)
+	return WithProgress(ctx, func(p Progress) {
+		t.observe(p.Stage, time.Now())
+		if prev != nil {
+			prev(p)
+		}
+	}), t
+}
+
+func (t *StageTimer) observe(s Stage, now time.Time) {
+	if s < StagePreparing || s > StageUploading {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s != t.cur {
+		t.spent[t.cur] += now.Sub(t.since)
+		t.cur, t.since = s, now
+	}
+}
+
+// LogAttrs returns the time spent in each stage so far as slog key-value
+// pairs: lookup, download, process and upload (stages that never ran are left out).
+func (t *StageTimer) LogAttrs() []any { return t.attrsAt(time.Now()) }
+
+func (t *StageTimer) attrsAt(now time.Time) []any {
+	t.mu.Lock()
+	spent := t.spent
+	spent[t.cur] += now.Sub(t.since)
+	t.mu.Unlock()
+
+	names := [...]string{"lookup", "download", "process", "upload"}
+	var attrs []any
+	for s, d := range spent {
+		if d > 0 {
+			attrs = append(attrs, names[s], d.Round(10*time.Millisecond).String())
+		}
+	}
+	return attrs
 }

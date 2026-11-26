@@ -13,6 +13,7 @@ import (
 
 	"anydloadbot/internal/downloader"
 	"anydloadbot/internal/downloader/ytdlp"
+	"anydloadbot/internal/downloader/ytdlp/ytdlptest"
 )
 
 func TestFindURL(t *testing.T) {
@@ -118,8 +119,9 @@ func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 	if slices.Contains(args, "--dump-single-json") {
 		return []byte(f.meta), nil
 	}
-	if f.noFile {
-		return []byte("\n"), nil
+	out, pass := ytdlptest.Download(args, f.meta)
+	if f.noFile || !pass {
+		return out, nil
 	}
 	dir := args[slices.Index(args, "-P")+1]
 	ext := ".mp4"
@@ -130,7 +132,7 @@ func (f *fakeRun) run(_ context.Context, args ...string) ([]byte, error) {
 	if err := os.WriteFile(path, make([]byte, f.fileBytes), 0o600); err != nil {
 		return nil, err
 	}
-	return []byte(path + "\n"), nil
+	return append(out, path+"\n"...), nil
 }
 
 func newTestProvider(f *fakeRun) *Provider {
@@ -150,16 +152,17 @@ func TestDownload(t *testing.T) {
 	if m.Filename != "RkW7kOKUcko.mp4" || len(m.Data) != 1234 || m.Title != "Hello" {
 		t.Errorf("unexpected media: %q, %d bytes, %q", m.Filename, len(m.Data), m.Title)
 	}
-	if len(f.calls) != 2 {
-		t.Fatalf("yt-dlp ran %d times, want 2 (probe + download)", len(f.calls))
+	// One run: the duration and live checks happen inside it (--match-filter).
+	if len(f.calls) != 1 {
+		t.Fatalf("yt-dlp ran %d times, want 1", len(f.calls))
 	}
+	run := f.calls[0]
 	// The link must come after "--" so it can never be parsed as an option.
-	if probe := f.calls[0]; probe[len(probe)-2] != "--" || probe[len(probe)-1] != link {
-		t.Errorf("link not passed after --: %v", probe)
+	if run[len(run)-2] != "--" || run[len(run)-1] != link {
+		t.Errorf("link not passed after --: %v", run)
 	}
-	// The download reuses the probe's metadata instead of looking the link up again.
-	if dl := f.calls[1]; !slices.Contains(dl, "--load-info-json") {
-		t.Errorf("download looked the link up again: %v", dl)
+	if i := slices.Index(run, "--match-filter"); i < 0 || run[i+1] != "!is_live & duration <= 900" {
+		t.Errorf("no duration/live filter: %v", run)
 	}
 }
 
@@ -175,7 +178,7 @@ func TestDownloadLimits(t *testing.T) {
 		{
 			name:      "exactly at the limit is allowed",
 			fake:      &fakeRun{meta: `{"duration":900}`, fileBytes: 1},
-			wantCalls: 2,
+			wantCalls: 1,
 		},
 		{
 			name:      "too long never starts the download",
@@ -193,7 +196,7 @@ func TestDownloadLimits(t *testing.T) {
 			name:      "rejected by max-filesize",
 			fake:      &fakeRun{meta: `{"duration":60}`, noFile: true},
 			wantErr:   downloader.ErrTooLarge,
-			wantCalls: 2,
+			wantCalls: 1,
 		},
 		{
 			name:      "unavailable video",
@@ -262,7 +265,7 @@ func TestDownloadAudio(t *testing.T) {
 	}
 
 	// yt-dlp must be asked to extract MP3 and embed the metadata and cover art.
-	args := f.calls[1]
+	args := f.calls[0]
 	for _, want := range []string{"-x", "--embed-metadata", "--embed-thumbnail"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("yt-dlp args missing %s: %v", want, args)

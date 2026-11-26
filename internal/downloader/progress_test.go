@@ -3,11 +3,13 @@ package downloader
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestReportWithoutCallbackIsANoOp(t *testing.T) {
@@ -71,5 +73,27 @@ func TestGetMediaReportsProgress(t *testing.T) {
 	}
 	if len(reports) != 0 {
 		t.Errorf("Get reported %d progress updates, want none", len(reports))
+	}
+}
+
+func TestStageTimer(t *testing.T) {
+	t.Parallel()
+
+	var forwarded int
+	ctx := WithProgress(context.Background(), func(Progress) { forwarded++ })
+	ctx, timer := WithStageTimer(ctx)
+
+	start := timer.since
+	timer.observe(StageDownloading, start.Add(4*time.Second)) // 4s of lookup
+	timer.observe(StageDownloading, start.Add(5*time.Second)) // same stage: nothing changes
+	timer.observe(StageUploading, start.Add(7*time.Second))   // 3s of download
+	Report(ctx, Progress{Stage: StageUploading})
+
+	got := fmt.Sprint(timer.attrsAt(start.Add(8 * time.Second)))
+	if got != "[lookup 4s download 3s upload 1s]" {
+		t.Errorf("attrs = %s", got)
+	}
+	if forwarded != 1 {
+		t.Errorf("progress forwarded %d times, want 1", forwarded)
 	}
 }

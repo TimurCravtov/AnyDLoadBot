@@ -241,24 +241,21 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 		extra = []string{"--cookies", p.cookies}
 	}
 
-	meta, err := p.yt.Probe(ctx, link, extra...)
+	// One run: the metadata comes with the download.
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Extra: extra})
 	if err != nil {
 		if noVideoRe.MatchString(err.Error()) {
 			return nil, fmt.Errorf("%w: image posts have no audio", downloader.ErrNoMedia)
 		}
 		return nil, err
 	}
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Extra: extra})
-	if err != nil {
-		return nil, err
-	}
 	return &downloader.Media{
 		Kind:      downloader.KindAudio,
 		Filename:  file.Name,
 		Data:      file.Data,
-		Title:     meta.Title,
-		Performer: meta.Uploader,
-		Duration:  int(meta.Duration),
+		Title:     file.Info.Title,
+		Performer: file.Info.Uploader,
+		Duration:  int(file.Info.Duration),
 	}, nil
 }
 

@@ -97,8 +97,24 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 	// YouTube, Instagram and Spotify need yt-dlp and ffmpeg; without them, run
 	// without those sites.
 	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{
-		Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy, POTServer: cfg.YtDlpPOTServer,
+		Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy, POTServer: cfg.YtDlpPOTServer, Server: cfg.YtDlpServer,
 	})
+
+	// YouTube (and Spotify, which is fetched from YouTube) can use its own proxy
+	// setting: with cookies and a PO token it often works without WARP, which
+	// saves a detour on every request.
+	var ytExtra []string
+	switch cfg.YouTubeProxy {
+	case "":
+	case "direct":
+		ytExtra = ytdlp.DirectArgs
+		log.Info("YouTube is reached directly, without the yt-dlp proxy")
+	default:
+		ytExtra = []string{"--proxy", cfg.YouTubeProxy}
+		if u, err := url.Parse(cfg.YouTubeProxy); err == nil {
+			log.Info("YouTube goes through its own proxy", "proxy", u.Host)
+		}
+	}
 
 	// These sites need nothing but HTTP; Pinterest can also offer MP3 when yt-dlp is there.
 	var pin downloader.Provider = pinterest.New()
@@ -111,9 +127,9 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 		log.Warn("YouTube, Instagram and Spotify support disabled", "err", err)
 	} else {
 		providers = append(providers,
-			youtube.New(yt, youtube.Options{}),
+			youtube.New(yt, youtube.Options{Extra: ytExtra}),
 			instagram.New(yt, instagram.Options{Cookies: cfg.InstagramCookies}),
-			spotify.New(yt, spotify.Options{}),
+			spotify.New(yt, spotify.Options{Extra: ytExtra}),
 			ytdlpsite.WithInline(ytdlpsite.New(yt, ytdlpsite.TikTok(), ytdlpsite.Options{})),
 		)
 

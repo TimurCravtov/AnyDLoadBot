@@ -221,6 +221,7 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 		b.editInlineProgress(pctx, api, c.InlineMessageID, link, text)
 	})
 	defer stopProgress()
+	ctx, timer := downloader.WithStageTimer(ctx)
 
 	file, err := b.storedMedia(ctx, api, provider, download, link, audio)
 	stopProgress()
@@ -232,7 +233,7 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 		}
 		text, unexpected := failureText(err)
 		if unexpected {
-			log.Error("inline download failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
+			log.Error("inline download failed", append([]any{"err", err, "took", time.Since(start).Round(time.Millisecond)}, timer.LogAttrs()...)...)
 		} else {
 			log.Warn("inline download rejected", "err", err)
 		}
@@ -249,7 +250,7 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 		b.editStatus(ctx, api, c.InlineMessageID, downloadFailed)
 		return
 	}
-	log.Info("inline media sent", "took", time.Since(start).Round(time.Millisecond))
+	log.Info("inline media sent", append([]any{"took", time.Since(start).Round(time.Millisecond)}, timer.LogAttrs()...)...)
 }
 
 // storedMedia gets the link's file into the storage chat and returns the

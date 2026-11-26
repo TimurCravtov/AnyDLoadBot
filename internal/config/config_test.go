@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -60,6 +61,14 @@ func TestLoad(t *testing.T) {
 			TelegramAPIURL: "http://telegram-bot-api:8081",
 		}},
 		{name: "bad bot api server", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_API_URL": "telegram-bot-api:8081"}, wantErr: true},
+		{name: "youtube direct", env: map[string]string{"BOT_TOKEN": "t", "YOUTUBE_PROXY": "direct"}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, YouTubeProxy: "direct",
+		}},
+		{name: "bad youtube proxy", env: map[string]string{"BOT_TOKEN": "t", "YOUTUBE_PROXY": "none"}, wantErr: true},
+		{name: "yt-dlp server", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_SERVER": " /opt/yt-dlp/bin/python  /opt/ytdlp-server/server.py "}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100,
+			YtDlpServer: []string{"/opt/yt-dlp/bin/python", "/opt/ytdlp-server/server.py"},
+		}},
 		{name: "bad fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "warp:1080"}, wantErr: true},
 		{name: "proxy without scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "10.0.0.1:1080"}, wantErr: true},
 		{name: "proxy with a strange scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "ftp://10.0.0.1"}, wantErr: true},
@@ -78,7 +87,7 @@ func TestLoad(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("load() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("load() = %+v, want %+v", got, tt.want)
 			}
 		})

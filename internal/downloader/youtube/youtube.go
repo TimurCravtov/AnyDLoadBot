@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,12 +41,16 @@ var (
 type Options struct {
 	// MaxDuration is the longest allowed video (default DefaultMaxDuration).
 	MaxDuration time.Duration
+	// Extra are yt-dlp arguments added to every YouTube run, e.g. DirectArgs
+	// to bypass the shared yt-dlp proxy.
+	Extra []string
 }
 
 // Provider downloads YouTube videos and audio.
 type Provider struct {
 	yt          *ytdlp.Client
 	maxDuration time.Duration
+	extra       []string
 
 	fetch      *downloader.Fetcher // oEmbed lookups for inline previews
 	oembedBase string
@@ -65,6 +70,7 @@ func New(yt *ytdlp.Client, opts Options) *Provider {
 	return &Provider{
 		yt:          yt,
 		maxDuration: opts.MaxDuration,
+		extra:       opts.Extra,
 		fetch: downloader.NewFetcher(func(host string) bool {
 			return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com")
 		}),
@@ -166,29 +172,17 @@ func parseVideoID(link string) (string, bool) {
 
 // Download implements downloader.Provider.
 func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media, error) {
-	meta, release, err := p.prepare(ctx, link)
+	file, err := p.fetch1(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort})
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort, Info: meta})
-	if err != nil {
-		return nil, err
-	}
-	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: meta.Title}, nil
+	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: file.Info.Title}, nil
 }
 
 // DownloadAudio implements downloader.AudioDownloader. The MP3 has the title,
 // channel name and thumbnail embedded as ID3 tags and cover art.
 func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.Media, error) {
-	meta, release, err := p.prepare(ctx, link)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Info: meta})
+	file, err := p.fetch1(ctx, link, ytdlp.Request{Audio: true})
 	if err != nil {
 		return nil, err
 	}
@@ -196,41 +190,35 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 		Kind:      downloader.KindAudio,
 		Filename:  file.Name,
 		Data:      file.Data,
-		Title:     meta.Title,
-		Performer: meta.Uploader,
-		Duration:  int(meta.Duration),
+		Title:     file.Info.Title,
+		Performer: file.Info.Uploader,
+		Duration:  int(file.Info.Duration),
 	}, nil
 }
 
-// prepare validates the link, takes a yt-dlp slot and checks the video's
-// metadata before anything is downloaded. The caller must call release.
-func (p *Provider) prepare(ctx context.Context, link string) (meta *ytdlp.Info, release func(), err error) {
+// fetch1 validates the link and downloads it in one yt-dlp run, which also
+// refuses live streams and videos over the length limit before downloading.
+// It looks the video up the fast way first (ytdlp.FastYouTube) and the
+// default way if that fails, unless the video is simply unavailable.
+func (p *Provider) fetch1(ctx context.Context, link string, req ytdlp.Request) (*ytdlp.File, error) {
 	if _, ok := p.FindURL(link); !ok {
-		return nil, nil, fmt.Errorf("not a YouTube link: %q", link)
+		return nil, fmt.Errorf("not a YouTube link: %q", link)
 	}
 
-	release, err = p.yt.Acquire(ctx)
+	release, err := p.yt.Acquire(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	defer release()
 
-	meta, err = p.yt.Probe(ctx, link, ytdlp.FastYouTube...)
-	// If the fast lookup didn't work out, the default one; not for videos that
-	// are simply unavailable (private, removed, ...).
-	if err != nil && ctx.Err() == nil && !errors.Is(err, downloader.ErrNoMedia) {
-		meta, err = p.yt.Probe(ctx, link)
+	req.MaxDuration = p.maxDuration
+	base := req.Extra
+	req.Extra = append(append(slices.Clone(base), p.extra...), ytdlp.FastYouTube...)
+	file, err := p.yt.Fetch(ctx, link, req)
+	if err == nil || ctx.Err() != nil || errors.Is(err, downloader.ErrNoMedia) ||
+		errors.Is(err, downloader.ErrTooLong) || errors.Is(err, downloader.ErrTooLarge) {
+		return file, err
 	}
-	if err != nil {
-		release()
-		return nil, nil, err
-	}
-	if meta.IsLive || meta.Duration <= 0 {
-		release()
-		return nil, nil, fmt.Errorf("%w: live streams are not supported", downloader.ErrNoMedia)
-	}
-	if d := time.Duration(meta.Duration * float64(time.Second)); d > p.maxDuration {
-		release()
-		return nil, nil, fmt.Errorf("%w: %s (limit %s)", downloader.ErrTooLong, d.Round(time.Second), p.maxDuration)
-	}
-	return meta, release, nil
+	req.Extra = append(slices.Clone(base), p.extra...)
+	return p.yt.Fetch(ctx, link, req)
 }

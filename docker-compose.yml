@@ -18,6 +18,11 @@ services:
       MAX_TOTAL_DOWNLOADS: ${MAX_TOTAL_DOWNLOADS:-100}
       # yt-dlp's traffic goes through the warp service below.
       YTDLP_PROXY: ${YTDLP_PROXY:-socks5://warp:1080}
+      # Except YouTube (and Spotify, which is fetched from YouTube): with cookies
+      # and a PO token it works from the server's own address, and skipping
+      # WARP saves a detour on every request. Set to an empty value to send
+      # YouTube through YTDLP_PROXY again, or to a proxy URL.
+      YOUTUBE_PROXY: ${YOUTUBE_PROXY-direct}
       # The bot's own web requests (Pinterest, X, previews) go through WARP too,
       # because sites serve server IPs stripped-down pages. Set FETCH_PROXY to an
       # empty value to turn this off.
@@ -49,6 +54,10 @@ services:
       YTDLP_COOKIES_B64: ${YTDLP_COOKIES_B64:-}
       INSTAGRAM_COOKIES_B64: ${INSTAGRAM_COOKIES_B64:-}
       REDDIT_COOKIES_B64: ${REDDIT_COOKIES_B64:-}
+    volumes:
+      # yt-dlp's cache (YouTube's player code, solved challenges), so the first
+      # downloads after a redeploy aren't slower.
+      - ytdlp-cache:/home/bot/.cache
     depends_on:
       warp:
         condition: service_healthy
@@ -105,5 +114,6 @@ services:
       start_period: 40s
 
 volumes:
+  ytdlp-cache:
   warp-data:
   telegram-bot-api-data:

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"anydloadbot/internal/downloader"
 )
@@ -258,54 +259,45 @@ func TestDirectURL(t *testing.T) {
 	}
 }
 
-func TestFetchReusesProbe(t *testing.T) {
+func TestFetchSingleRun(t *testing.T) {
 	t.Parallel()
 
 	const link = "https://example.com/v"
-	r := &recorder{}
-	c := NewWithRunner(r.run, 1)
-
-	info, err := c.Probe(context.Background(), link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Fetch(context.Background(), link, Request{Format: "b", Info: info}); err != nil {
-		t.Fatal(err)
-	}
-
-	// The download loads the saved metadata instead of looking the link up again.
-	args := r.calls[1]
-	i := slices.Index(args, "--load-info-json")
-	if i < 0 || slices.Contains(args, link) {
-		t.Fatalf("download did not reuse the metadata: %v", args)
-	}
-	if got, _ := os.ReadFile(args[i+1]); len(got) != 0 {
-		t.Errorf("metadata file was left behind (%d bytes)", len(got))
-	}
-}
-
-func TestFetchFallsBackWhenSavedMetadataFails(t *testing.T) {
-	t.Parallel()
-
-	const link = "https://example.com/v"
-	r := &recorder{}
-	var calls [][]string
-	c := NewWithRunner(func(ctx context.Context, args ...string) ([]byte, error) {
-		calls = append(calls, slices.Clone(args))
-		if slices.Contains(args, "--load-info-json") {
-			return nil, errors.New("yt-dlp: exit status 1: ERROR: HTTP Error 403: Forbidden")
+	dir := ""
+	run := func(meta string, pass bool) Runner {
+		return func(_ context.Context, args ...string) ([]byte, error) {
+			out := "anydl-meta:" + meta + "\n"
+			if !pass {
+				return []byte(out), nil // the match filter refused it: no file
+			}
+			dir = args[slices.Index(args, "-P")+1]
+			path := filepath.Join(dir, "x.mp4")
+			if err := os.WriteFile(path, []byte("video"), 0o600); err != nil {
+				return nil, err
+			}
+			return []byte(out + path + "\n"), nil
 		}
-		return r.run(ctx, args...)
-	}, 1)
+	}
+	req := Request{Format: "b", MaxDuration: 15 * time.Minute}
 
-	info, err := c.Probe(context.Background(), link)
-	if err != nil {
-		t.Fatal(err)
+	// The metadata comes with the download.
+	f, err := NewWithRunner(run(`{"id":"x","title":"Clip","uploader":"Me","duration":61}`, true), 1).Fetch(context.Background(), link, req)
+	if err != nil || f.Info.Title != "Clip" || f.Info.Uploader != "Me" || f.Info.Duration != 61 || string(f.Data) != "video" {
+		t.Fatalf("Fetch() = %+v, %v", f, err)
 	}
-	if _, err := c.Fetch(context.Background(), link, Request{Format: "b", Info: info}); err != nil {
-		t.Fatalf("Fetch() = %v, want the fallback to succeed", err)
-	}
-	if last := calls[len(calls)-1]; len(calls) != 3 || last[len(last)-1] != link {
-		t.Errorf("calls = %v, want probe, saved-metadata try, then the link", calls)
+
+	// Refusals by the filter say why.
+	for _, tt := range []struct {
+		meta string
+		want error
+	}{
+		{`{"id":"x","duration":901}`, downloader.ErrTooLong},
+		{`{"id":"x","is_live":true}`, downloader.ErrNoMedia},
+		{`{"id":"x"}`, downloader.ErrNoMedia},                // no duration: treated as live
+		{`{"id":"x","duration":60}`, downloader.ErrTooLarge}, // passed the filter, refused by --max-filesize
+	} {
+		if _, err := NewWithRunner(run(tt.meta, false), 1).Fetch(context.Background(), link, req); !errors.Is(err, tt.want) {
+			t.Errorf("meta %s: err = %v, want %v", tt.meta, err, tt.want)
+		}
 	}
 }

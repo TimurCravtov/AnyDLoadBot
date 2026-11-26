@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,12 +38,16 @@ var (
 type Options struct {
 	// MaxDuration is the longest allowed track (default DefaultMaxDuration).
 	MaxDuration time.Duration
+	// Extra are yt-dlp arguments added to every YouTube search and download,
+	// e.g. ytdlp.DirectArgs to bypass the shared yt-dlp proxy.
+	Extra []string
 }
 
 // Provider downloads Spotify tracks as MP3 audio.
 type Provider struct {
 	yt          *ytdlp.Client
 	maxDuration time.Duration
+	extra       []string
 	fetch       *downloader.Fetcher
 	siteBase    string
 }
@@ -60,6 +65,7 @@ func New(yt *ytdlp.Client, opts Options) *Provider {
 	return &Provider{
 		yt:          yt,
 		maxDuration: opts.MaxDuration,
+		extra:       opts.Extra,
 		siteBase:    siteBase,
 		fetch:       downloader.NewFetcher(isSpotifyHost),
 	}
@@ -150,10 +156,10 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	if t.Artist != "" {
 		query = t.Artist + " - " + t.Title
 	}
-	file, err := p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true, Extra: ytdlp.FastYouTube})
+	file, err := p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true, Extra: append(slices.Clone(p.extra), ytdlp.FastYouTube...)})
 	if err != nil && ctx.Err() == nil && !errors.Is(err, downloader.ErrTooLarge) && !errors.Is(err, downloader.ErrNoMedia) {
 		// The fast YouTube lookup didn't work out: the default one.
-		file, err = p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true})
+		file, err = p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true, Extra: p.extra})
 	}
 	if err != nil {
 		return nil, err

@@ -97,6 +97,8 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		})
 		defer stop()
 	}
+	// Time per step (lookup, download, ...) for the log lines below.
+	ctx, timer := downloader.WithStageTimer(ctx)
 
 	action := models.ChatActionUploadVideo
 	if audio {
@@ -126,7 +128,7 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 			if f.fileID != "" {
 				b.files.put(key, f)
 			}
-			log.Info("media sent", "kind", f.kind, "via", "url", "took", took())
+			log.Info("media sent", append([]any{"kind", f.kind, "via", "url", "took", took()}, timer.LogAttrs()...)...)
 			return
 		}
 		if job.wasCancelled() {
@@ -144,14 +146,13 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		}
 		text, unexpected := failureText(err)
 		if unexpected {
-			log.Error("download failed", "err", err, "took", took())
+			log.Error("download failed", append([]any{"err", err, "took", took()}, timer.LogAttrs()...)...)
 		} else {
 			log.Warn("download rejected", "err", err)
 		}
 		b.reply(ctx, api, u, text)
 		return
 	}
-	downloaded := took()
 
 	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
 	f, err := b.deliver(withUpload(ctx), api, chatID, u.Message.ID, fromMedia(media))
@@ -167,8 +168,8 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	if f.fileID != "" {
 		b.files.put(key, f)
 	}
-	log.Info("media sent", "kind", media.Kind, "via", "upload", "bytes", len(media.Data),
-		"download_took", downloaded, "took", took())
+	log.Info("media sent", append([]any{"kind", media.Kind, "via", "upload", "bytes", len(media.Data), "took", took()},
+		timer.LogAttrs()...)...)
 }
 
 var (

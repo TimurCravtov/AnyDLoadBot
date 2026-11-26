@@ -13,6 +13,7 @@ import (
 
 	"anydloadbot/internal/downloader"
 	"anydloadbot/internal/downloader/ytdlp"
+	"anydloadbot/internal/downloader/ytdlp/ytdlptest"
 )
 
 func TestTikTokFindURL(t *testing.T) {
@@ -120,6 +121,10 @@ func (f *fakeRun) run(ctx context.Context, args ...string) ([]byte, error) {
 	if slices.Contains(args, "--dump-single-json") {
 		return []byte(f.meta), nil
 	}
+	out, pass := ytdlptest.Download(args, f.meta)
+	if !pass {
+		return out, nil
+	}
 	ext := ".mp4"
 	if slices.Contains(args, "-x") {
 		ext = ".mp3"
@@ -128,7 +133,7 @@ func (f *fakeRun) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := os.WriteFile(path, []byte("video"), 0o600); err != nil {
 		return nil, err
 	}
-	return []byte(path + "\n"), nil
+	return append(out, path+"\n"...), nil
 }
 
 func newTestProvider(f *fakeRun, opts Options) *Provider {
@@ -154,23 +159,19 @@ func TestDownload(t *testing.T) {
 		t.Errorf("title = %q, want the video's title (the chat caption)", m.Title)
 	}
 
-	if len(f.calls) != 2 {
-		t.Fatalf("yt-dlp ran %d times, want 2 (probe + download)", len(f.calls))
+	if len(f.calls) != 1 {
+		t.Fatalf("yt-dlp ran %d times, want 1 (checks happen inside the download)", len(f.calls))
 	}
 	for i, args := range f.calls {
-		// The probe gets the link after "--", so it can never be parsed as an
-		// option; the download reuses the probe's metadata instead.
-		if i == 0 && (args[len(args)-2] != "--" || args[len(args)-1] != link) {
+		// The link must come after "--" so it can never be parsed as an option.
+		if args[len(args)-2] != "--" || args[len(args)-1] != link {
 			t.Errorf("call %d: link not passed after --: %v", i, args)
-		}
-		if i == 1 && !slices.Contains(args, "--load-info-json") {
-			t.Errorf("call %d: download looked the link up again: %v", i, args)
 		}
 		if !slices.Contains(args, "--cookies") {
 			t.Errorf("call %d: cookies not passed: %v", i, args)
 		}
 	}
-	if len(f.cookies) != 2 || f.cookies[0] != "cookie-data" || f.cookies[1] != "cookie-data" {
+	if len(f.cookies) != 1 || f.cookies[0] != "cookie-data" {
 		t.Errorf("yt-dlp did not receive the configured cookies: %q", f.cookies)
 	}
 }
@@ -184,8 +185,8 @@ func TestDownloadLimits(t *testing.T) {
 		wantErr   error
 		wantCalls int
 	}{
-		{"unknown duration is allowed", `{"title":"x"}`, nil, 2},
-		{"at the limit", `{"duration":900}`, nil, 2},
+		{"unknown duration is allowed", `{"title":"x"}`, nil, 1},
+		{"at the limit", `{"duration":900}`, nil, 1},
 		{"too long never starts the download", `{"duration":900.5}`, downloader.ErrTooLong, 1},
 		{"live stream", `{"is_live":true}`, downloader.ErrNoMedia, 1},
 	}
@@ -302,7 +303,7 @@ func TestDownloadAudio(t *testing.T) {
 	if m.Title != "Scramble up ur name" || m.Performer != "scout2015" || m.Duration != 10 {
 		t.Errorf("tags: %q / %q / %d", m.Title, m.Performer, m.Duration)
 	}
-	if args := f.calls[1]; !slices.Contains(args, "-x") || !slices.Contains(args, "--embed-thumbnail") {
+	if args := f.calls[0]; !slices.Contains(args, "-x") || !slices.Contains(args, "--embed-thumbnail") {
 		t.Errorf("yt-dlp not asked for an MP3 with cover: %v", args)
 	}
 

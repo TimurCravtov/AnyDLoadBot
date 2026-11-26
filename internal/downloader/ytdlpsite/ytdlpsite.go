@@ -254,30 +254,18 @@ func (p *Provider) FindURL(text string) (string, bool) {
 
 // Download implements downloader.Provider.
 func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media, error) {
-	meta, release, err := p.prepare(ctx, link)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort, Extra: p.cookieArgs(), Info: meta})
+	file, err := p.fetch1(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort})
 	if err != nil {
 		return nil, err
 	}
 	// The title is the caption in chat; inline messages are sent without one.
-	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: meta.Title}, nil
+	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: file.Info.Title}, nil
 }
 
 // DownloadAudio implements downloader.AudioDownloader: the video's sound as an
 // MP3, with title, uploader and cover art embedded.
 func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.Media, error) {
-	meta, release, err := p.prepare(ctx, link)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Extra: p.cookieArgs(), Info: meta})
+	file, err := p.fetch1(ctx, link, ytdlp.Request{Audio: true})
 	if err != nil {
 		return nil, err
 	}
@@ -285,37 +273,27 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 		Kind:      downloader.KindAudio,
 		Filename:  file.Name,
 		Data:      file.Data,
-		Title:     truncate(strings.TrimSpace(meta.Title), maxPreviewTitle),
-		Performer: meta.Uploader,
-		Duration:  int(meta.Duration),
+		Title:     truncate(strings.TrimSpace(file.Info.Title), maxPreviewTitle),
+		Performer: file.Info.Uploader,
+		Duration:  int(file.Info.Duration),
 	}, nil
 }
 
-// prepare validates the link, takes a yt-dlp slot and checks the metadata
-// before anything is downloaded. The caller must call release.
-func (p *Provider) prepare(ctx context.Context, link string) (meta *ytdlp.Info, release func(), err error) {
+// fetch1 validates the link and downloads it in one yt-dlp run, which also
+// refuses live streams and media over the length limit before downloading.
+// Some sites don't report a duration; the limit only applies when they do.
+func (p *Provider) fetch1(ctx context.Context, link string, req ytdlp.Request) (*ytdlp.File, error) {
 	if _, ok := p.FindURL(link); !ok {
-		return nil, nil, fmt.Errorf("not a %s link: %q", p.site.Name, link)
+		return nil, fmt.Errorf("not a %s link: %q", p.site.Name, link)
 	}
 
-	release, err = p.yt.Acquire(ctx)
+	release, err := p.yt.Acquire(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	defer release()
 
-	meta, err = p.yt.Probe(ctx, link, p.cookieArgs()...)
-	if err != nil {
-		release()
-		return nil, nil, err
-	}
-	if meta.IsLive {
-		release()
-		return nil, nil, fmt.Errorf("%w: live streams are not supported", downloader.ErrNoMedia)
-	}
-	// Some sites don't report a duration; only enforce the limit when we know it.
-	if d := time.Duration(meta.Duration * float64(time.Second)); d > p.maxDuration {
-		release()
-		return nil, nil, fmt.Errorf("%w: %s (limit %s)", downloader.ErrTooLong, d.Round(time.Second), p.maxDuration)
-	}
-	return meta, release, nil
+	req.Extra = append(req.Extra, p.cookieArgs()...)
+	req.MaxDuration, req.AllowUnknownDuration = p.maxDuration, true
+	return p.yt.Fetch(ctx, link, req)
 }

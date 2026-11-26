@@ -31,6 +31,13 @@ type Config struct {
 	YtDlpCookies string
 	// YtDlpProxy optionally routes yt-dlp through a proxy (http, https, socks5).
 	YtDlpProxy string
+	// YtDlpServer is the command line of the yt-dlp fork server, which saves
+	// yt-dlp's start-up on every run (see ytdlp.Options.Server). Empty: unused.
+	YtDlpServer []string
+	// YouTubeProxy overrides YtDlpProxy for YouTube (and Spotify, which is
+	// fetched from YouTube): "direct" for no proxy, or a proxy URL. "" means
+	// YtDlpProxy.
+	YouTubeProxy string
 	// FetchProxy optionally routes the bot's own web requests (Pinterest, X,
 	// previews) through a proxy. Telegram's API uses TelegramProxy. (Not named
 	// HTTPS_PROXY: Docker treats that name specially during image builds.)
@@ -158,6 +165,9 @@ func load(getenv func(string) string) (Config, error) {
 
 		YtDlpPath: "yt-dlp",
 	}
+	if f := strings.Fields(getenv("YTDLP_SERVER")); len(f) > 0 {
+		cfg.YtDlpServer = f
+	}
 	if v := strings.TrimSpace(getenv("YTDLP_PATH")); v != "" {
 		cfg.YtDlpPath = v
 	}
@@ -228,6 +238,14 @@ func load(getenv func(string) string) (Config, error) {
 			continue
 		}
 		*p.dst = v
+	}
+
+	if v := strings.TrimSpace(getenv("YOUTUBE_PROXY")); v != "" {
+		if u, err := url.Parse(v); v != "direct" && (err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks4", "socks5", "socks5h"}, u.Scheme)) {
+			errs = append(errs, errors.New(`YOUTUBE_PROXY: must be "direct" or look like socks5://host:port`))
+		} else {
+			cfg.YouTubeProxy = v
+		}
 	}
 
 	if v := strings.TrimSpace(getenv("STORAGE_CHAT_ID")); v != "" {

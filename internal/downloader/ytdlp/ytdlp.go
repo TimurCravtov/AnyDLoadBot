@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"anydloadbot/internal/downloader"
 )
@@ -64,6 +65,12 @@ type Options struct {
 	// PO token ("Requested format is not available"); yt-dlp's bgutil plugin
 	// (installed in the Docker image) gets the tokens from this server.
 	POTServer string
+	// Server is the command line of the yt-dlp fork server
+	// (deploy/ytdlp-server/server.py), e.g. ["/opt/yt-dlp/bin/python",
+	// "/opt/ytdlp-server/server.py"]. It loads yt-dlp once, which saves about
+	// two seconds of start-up on every run. Runs fall back to starting yt-dlp
+	// normally whenever the server isn't up. Only on Unix; nil means unused.
+	Server []string
 }
 
 func (o Options) args() []string {
@@ -93,7 +100,11 @@ func New(bin string, concurrency int, opts Options) (*Client, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, fmt.Errorf("ffmpeg not found (needed to merge streams and extract audio): %w", err)
 	}
-	return NewWithRunner(execRunner(path), concurrency, opts.args()...), nil
+	run := execRunner(path)
+	if len(opts.Server) > 0 {
+		run = startServer(opts.Server, run)
+	}
+	return NewWithRunner(run, concurrency, opts.args()...), nil
 }
 
 // NewWithRunner returns a Client that uses run instead of the real executable.
@@ -175,27 +186,37 @@ func execRunner(bin string) Runner {
 			return nil, err
 		}
 
-		// Read both streams while yt-dlp runs, so progress is reported live.
-		// (Where yt-dlp prints progress depends on its quiet mode, so check both.)
-		var stdout, stderr bytes.Buffer
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); scanOutput(ctx, outPipe, &stdout) }()
-		go func() { defer wg.Done(); scanOutput(ctx, errPipe, &stderr) }()
-		wg.Wait() // the pipes must be drained before Wait
-
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			msg := strings.TrimSpace(stderr.String())
-			if len(msg) > maxStderr {
-				msg = msg[len(msg)-maxStderr:]
-			}
-			return nil, fmt.Errorf("yt-dlp: %w: %s", err, msg)
-		}
-		return stdout.Bytes(), nil
+		stdout, stderr := drain(ctx, outPipe, errPipe)
+		return result(ctx, cmd.Wait(), stdout, stderr)
 	}
+}
+
+// drain reads yt-dlp's stdout and stderr until both are closed. It reads both
+// while yt-dlp runs, so progress is reported live. (Where yt-dlp prints
+// progress depends on its quiet mode, so it checks both.)
+func drain(ctx context.Context, outPipe, errPipe io.Reader) (stdout, stderr *bytes.Buffer) {
+	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); scanOutput(ctx, outPipe, stdout) }()
+	go func() { defer wg.Done(); scanOutput(ctx, errPipe, stderr) }()
+	wg.Wait()
+	return stdout, stderr
+}
+
+// result turns a finished run into the Runner's return values.
+func result(ctx context.Context, runErr error, stdout, stderr *bytes.Buffer) ([]byte, error) {
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > maxStderr {
+			msg = msg[len(msg)-maxStderr:]
+		}
+		return nil, fmt.Errorf("yt-dlp: %w: %s", runErr, msg)
+	}
+	return stdout.Bytes(), nil
 }
 
 // Acquire reserves one of the Client's process slots, waiting if all are busy.
@@ -218,8 +239,6 @@ type Info struct {
 	Thumbnail string  `json:"thumbnail"` // cover image URL, if the site has one
 	Duration  float64 `json:"duration"`  // seconds; 0 if unknown
 	IsLive    bool    `json:"is_live"`
-
-	raw []byte // the full metadata, so Fetch can reuse it (Request.Info)
 }
 
 // Probe fetches a link's metadata without downloading it. extra are additional
@@ -234,7 +253,6 @@ func (c *Client) Probe(ctx context.Context, link string, extra ...string) (*Info
 	if err := json.Unmarshal(out, &info); err != nil {
 		return nil, fmt.Errorf("parse yt-dlp metadata: %w", err)
 	}
-	info.raw = out
 	return &info, nil
 }
 
@@ -247,34 +265,28 @@ type Request struct {
 	Audio bool
 	// Extra are additional yt-dlp arguments, such as --cookies.
 	Extra []string
-	// Info, from a Probe of the same link just before, is reused instead of
-	// looking the link up again, which for YouTube means solving its
-	// challenges and getting a PO token a second time.
-	Info *Info
+	// MaxDuration, if set, makes yt-dlp itself refuse live streams and media
+	// longer than this before anything is downloaded (downloader.ErrNoMedia,
+	// downloader.ErrTooLong), so the link needs no separate Probe first.
+	MaxDuration time.Duration
+	// AllowUnknownDuration lets media through MaxDuration whose duration the
+	// site doesn't report. Otherwise such media counts as a live stream.
+	AllowUnknownDuration bool
 }
 
-// File is a downloaded file.
+// File is a downloaded file and the metadata yt-dlp found for it.
 type File struct {
 	Name string
 	Data []byte
+	Info Info
 }
 
-// Fetch downloads link into memory. It returns downloader.ErrTooLarge if no
-// format fits in downloader.MaxSize.
+// metaPrefix marks the metadata line Fetch has yt-dlp print.
+const metaPrefix = "anydl-meta:"
+
+// Fetch downloads link into memory, in a single yt-dlp run. It returns
+// downloader.ErrTooLarge if no format fits in downloader.MaxSize.
 func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, error) {
-	if req.Info != nil && len(req.Info.raw) > 0 {
-		f, err := c.fetch(ctx, link, req)
-		if err == nil || ctx.Err() != nil || errors.Is(err, downloader.ErrTooLarge) {
-			return f, err
-		}
-		// The saved metadata didn't work out (say, its stream URLs expired):
-		// look the link up again.
-		req.Info = nil
-	}
-	return c.fetch(ctx, link, req)
-}
-
-func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, error) {
 	dir, err := os.MkdirTemp("", "ytdl-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
@@ -293,28 +305,53 @@ func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, er
 	} else {
 		args = append(args, "-f", req.Format, "-S", req.Sort, "--merge-output-format", "mp4")
 	}
+	if req.MaxDuration > 0 {
+		limit := int(req.MaxDuration.Seconds())
+		filter := fmt.Sprintf("!is_live & duration <= %d", limit)
+		if req.AllowUnknownDuration {
+			filter = fmt.Sprintf("!is_live & (!duration | duration <= %d)", limit)
+		}
+		args = append(args, "--match-filter", filter)
+	}
 	args = append(args, req.Extra...)
 	args = append(args,
 		"-P", dir, "-o", "%(id)s.%(ext)s",
-		"--no-simulate", "--print", "after_move:filepath")
-	if req.Info != nil && len(req.Info.raw) > 0 {
-		infoFile := filepath.Join(dir, "info.json") // kept out of the output: that is "<id>.<ext>"
-		if err := os.WriteFile(infoFile, req.Info.raw, 0o600); err != nil {
-			return nil, fmt.Errorf("save metadata: %w", err)
-		}
-		args = append(args, "--load-info-json", infoFile)
-	} else {
-		args = append(args, "--", link)
-	}
+		// The metadata is printed right after the lookup, before the match
+		// filter, so a refused video still says why.
+		"--print", "pre_process:"+metaPrefix+"%(.{id,title,uploader,thumbnail,duration,is_live})j",
+		"--no-simulate", "--print", "after_move:filepath",
+		"--", link)
 
 	out, err := c.exec(ctx, args)
 	if err != nil {
 		return nil, Classify(err)
 	}
 
-	file := lastLine(out)
+	var meta Info
+	file := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if m, ok := strings.CutPrefix(line, metaPrefix); ok {
+			_ = json.Unmarshal([]byte(m), &meta) // only used for titles and refusals
+			continue
+		}
+		if line != "" {
+			file = line
+		}
+	}
+
 	if file == "" {
-		// yt-dlp exits 0 without a file when --max-filesize rejects every format.
+		// yt-dlp exits 0 without a file when the match filter or --max-filesize
+		// refuses the media.
+		d := time.Duration(meta.Duration * float64(time.Second))
+		switch {
+		case req.MaxDuration > 0 && meta.IsLive:
+			return nil, fmt.Errorf("%w: live streams are not supported", downloader.ErrNoMedia)
+		case req.MaxDuration > 0 && d > req.MaxDuration:
+			return nil, fmt.Errorf("%w: %s (limit %s)", downloader.ErrTooLong, d.Round(time.Second), req.MaxDuration)
+		case req.MaxDuration > 0 && meta.ID != "" && d <= 0 && !req.AllowUnknownDuration:
+			return nil, fmt.Errorf("%w: no duration, probably a live stream", downloader.ErrNoMedia)
+		}
 		return nil, downloader.ErrTooLarge
 	}
 	// Only trust paths inside our temp dir.
@@ -333,7 +370,7 @@ func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, er
 	if err != nil {
 		return nil, fmt.Errorf("read downloaded file: %w", err)
 	}
-	return &File{Name: filepath.Base(file), Data: data}, nil
+	return &File{Name: filepath.Base(file), Data: data, Info: meta}, nil
 }
 
 // FastYouTube are yt-dlp arguments that make YouTube lookups about a second
@@ -341,6 +378,10 @@ func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, er
 // streams with cookies and a PO token) instead of several. YouTube changes
 // which apps work now and then, so callers retry without them on failure.
 var FastYouTube = []string{"--extractor-args", "youtube:player_client=tv_samsung"}
+
+// DirectArgs make a run connect directly, bypassing the shared --proxy
+// (yt-dlp treats an empty proxy as "no proxy"; the last --proxy wins).
+var DirectArgs = []string{"--proxy", ""}
 
 // Direct is a single downloadable file, as yt-dlp resolved it.
 type Direct struct {
