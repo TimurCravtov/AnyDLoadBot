@@ -270,7 +270,7 @@ func (b *Bot) waitForAPI(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		b.log.Warn("Telegram API not reachable yet, retrying", "attempt", attempt, "err", err, "retry_in", delay)
+		b.log.Warn("Telegram API not reachable yet, retrying", "attempt", attempt, "err", err, "retry_in", delay.String())
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
