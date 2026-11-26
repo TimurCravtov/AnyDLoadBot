@@ -257,3 +257,55 @@ func TestDirectURL(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchReusesProbe(t *testing.T) {
+	t.Parallel()
+
+	const link = "https://example.com/v"
+	r := &recorder{}
+	c := NewWithRunner(r.run, 1)
+
+	info, err := c.Probe(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Fetch(context.Background(), link, Request{Format: "b", Info: info}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The download loads the saved metadata instead of looking the link up again.
+	args := r.calls[1]
+	i := slices.Index(args, "--load-info-json")
+	if i < 0 || slices.Contains(args, link) {
+		t.Fatalf("download did not reuse the metadata: %v", args)
+	}
+	if got, _ := os.ReadFile(args[i+1]); len(got) != 0 {
+		t.Errorf("metadata file was left behind (%d bytes)", len(got))
+	}
+}
+
+func TestFetchFallsBackWhenSavedMetadataFails(t *testing.T) {
+	t.Parallel()
+
+	const link = "https://example.com/v"
+	r := &recorder{}
+	var calls [][]string
+	c := NewWithRunner(func(ctx context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, slices.Clone(args))
+		if slices.Contains(args, "--load-info-json") {
+			return nil, errors.New("yt-dlp: exit status 1: ERROR: HTTP Error 403: Forbidden")
+		}
+		return r.run(ctx, args...)
+	}, 1)
+
+	info, err := c.Probe(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Fetch(context.Background(), link, Request{Format: "b", Info: info}); err != nil {
+		t.Fatalf("Fetch() = %v, want the fallback to succeed", err)
+	}
+	if last := calls[len(calls)-1]; len(calls) != 3 || last[len(last)-1] != link {
+		t.Errorf("calls = %v, want probe, saved-metadata try, then the link", calls)
+	}
+}

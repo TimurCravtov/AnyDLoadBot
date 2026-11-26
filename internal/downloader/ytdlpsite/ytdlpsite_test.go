@@ -158,9 +158,13 @@ func TestDownload(t *testing.T) {
 		t.Fatalf("yt-dlp ran %d times, want 2 (probe + download)", len(f.calls))
 	}
 	for i, args := range f.calls {
-		// The link must come after "--" so it can never be parsed as an option.
-		if args[len(args)-2] != "--" || args[len(args)-1] != link {
+		// The probe gets the link after "--", so it can never be parsed as an
+		// option; the download reuses the probe's metadata instead.
+		if i == 0 && (args[len(args)-2] != "--" || args[len(args)-1] != link) {
 			t.Errorf("call %d: link not passed after --: %v", i, args)
+		}
+		if i == 1 && !slices.Contains(args, "--load-info-json") {
+			t.Errorf("call %d: download looked the link up again: %v", i, args)
 		}
 		if !slices.Contains(args, "--cookies") {
 			t.Errorf("call %d: cookies not passed: %v", i, args)

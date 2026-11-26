@@ -172,7 +172,7 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	}
 	defer release()
 
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort})
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Format: formatSelector, Sort: formatSort, Info: meta})
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,7 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 	}
 	defer release()
 
-	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true})
+	file, err := p.yt.Fetch(ctx, link, ytdlp.Request{Audio: true, Info: meta})
 	if err != nil {
 		return nil, err
 	}

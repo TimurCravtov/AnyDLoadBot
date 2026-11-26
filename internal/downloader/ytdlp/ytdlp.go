@@ -218,6 +218,8 @@ type Info struct {
 	Thumbnail string  `json:"thumbnail"` // cover image URL, if the site has one
 	Duration  float64 `json:"duration"`  // seconds; 0 if unknown
 	IsLive    bool    `json:"is_live"`
+
+	raw []byte // the full metadata, so Fetch can reuse it (Request.Info)
 }
 
 // Probe fetches a link's metadata without downloading it. extra are additional
@@ -232,6 +234,7 @@ func (c *Client) Probe(ctx context.Context, link string, extra ...string) (*Info
 	if err := json.Unmarshal(out, &info); err != nil {
 		return nil, fmt.Errorf("parse yt-dlp metadata: %w", err)
 	}
+	info.raw = out
 	return &info, nil
 }
 
@@ -244,6 +247,10 @@ type Request struct {
 	Audio bool
 	// Extra are additional yt-dlp arguments, such as --cookies.
 	Extra []string
+	// Info, from a Probe of the same link just before, is reused instead of
+	// looking the link up again, which for YouTube means solving its
+	// challenges and getting a PO token a second time.
+	Info *Info
 }
 
 // File is a downloaded file.
@@ -255,6 +262,19 @@ type File struct {
 // Fetch downloads link into memory. It returns downloader.ErrTooLarge if no
 // format fits in downloader.MaxSize.
 func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, error) {
+	if req.Info != nil && len(req.Info.raw) > 0 {
+		f, err := c.fetch(ctx, link, req)
+		if err == nil || ctx.Err() != nil || errors.Is(err, downloader.ErrTooLarge) {
+			return f, err
+		}
+		// The saved metadata didn't work out (say, its stream URLs expired):
+		// look the link up again.
+		req.Info = nil
+	}
+	return c.fetch(ctx, link, req)
+}
+
+func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, error) {
 	dir, err := os.MkdirTemp("", "ytdl-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
@@ -276,8 +296,16 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 	args = append(args, req.Extra...)
 	args = append(args,
 		"-P", dir, "-o", "%(id)s.%(ext)s",
-		"--no-simulate", "--print", "after_move:filepath",
-		"--", link)
+		"--no-simulate", "--print", "after_move:filepath")
+	if req.Info != nil && len(req.Info.raw) > 0 {
+		infoFile := filepath.Join(dir, "info.json") // kept out of the output: that is "<id>.<ext>"
+		if err := os.WriteFile(infoFile, req.Info.raw, 0o600); err != nil {
+			return nil, fmt.Errorf("save metadata: %w", err)
+		}
+		args = append(args, "--load-info-json", infoFile)
+	} else {
+		args = append(args, "--", link)
+	}
 
 	out, err := c.exec(ctx, args)
 	if err != nil {

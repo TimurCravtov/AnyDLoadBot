@@ -154,9 +154,12 @@ func TestDownload(t *testing.T) {
 		t.Fatalf("yt-dlp ran %d times, want 2 (probe + download)", len(f.calls))
 	}
 	// The link must come after "--" so it can never be parsed as an option.
-	last := f.calls[1]
-	if last[len(last)-2] != "--" || last[len(last)-1] != link {
-		t.Errorf("link not passed after --: %v", last)
+	if probe := f.calls[0]; probe[len(probe)-2] != "--" || probe[len(probe)-1] != link {
+		t.Errorf("link not passed after --: %v", probe)
+	}
+	// The download reuses the probe's metadata instead of looking the link up again.
+	if dl := f.calls[1]; !slices.Contains(dl, "--load-info-json") {
+		t.Errorf("download looked the link up again: %v", dl)
 	}
 }
 
