@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"anydloadbot/internal/downloader"
@@ -31,8 +32,14 @@ func withUpload(ctx context.Context) context.Context {
 //     would cut off a 50 MB upload on a slow link. Instead the response must
 //     start within responseHeaderTimeout after the request was sent, which
 //     still catches a dead connection, and downloads have their own deadline.
-func newAPIClient() *http.Client {
+//
+// A non-nil proxy routes every API request (polling, sends, uploads) through
+// it; otherwise the standard HTTPS_PROXY environment variables apply.
+func newAPIClient(proxy *url.URL) *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
+	if proxy != nil {
+		t.Proxy = http.ProxyURL(proxy)
+	}
 	t.ResponseHeaderTimeout = apiPollTimeout + 30*time.Second // getUpdates holds the response for up to apiPollTimeout
 	return &http.Client{Transport: uploadProgressTransport{base: t}}
 }

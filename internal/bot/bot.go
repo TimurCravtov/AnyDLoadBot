@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type Option func(*options)
 type options struct {
 	storageChatID     int64
 	maxUser, maxTotal int
+	apiProxy          *url.URL
 	api               []tgbot.Option
 }
 
@@ -53,6 +55,14 @@ func WithLimits(perUser, total int) Option {
 // The chat must be one the bot can post to (e.g. the owner's chat with the bot).
 func WithStorageChat(chatID int64) Option {
 	return func(o *options) { o.storageChatID = chatID }
+}
+
+// WithAPIProxy sends all Telegram Bot API traffic (polling for updates,
+// messages and file uploads) through a proxy (http, https or socks5 URL). Use
+// it when the server can't reach api.telegram.org reliably on its own, for
+// example when getUpdates keeps failing with "502 Bad Gateway".
+func WithAPIProxy(proxy *url.URL) Option {
+	return func(o *options) { o.apiProxy = proxy }
 }
 
 // withAPIOptions passes extra options to the Telegram client (used by tests).
@@ -94,7 +104,7 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 			log.Error("telegram client error", "err", err)
 		}),
 		tgbot.WithMiddlewares(b.logUpdates),
-		tgbot.WithHTTPClient(apiPollTimeout, newAPIClient()),
+		tgbot.WithHTTPClient(apiPollTimeout, newAPIClient(o.apiProxy)),
 		// Be explicit: if omitted, Telegram silently reuses whatever list was last
 		// set for this token, which can hide inline updates.
 		tgbot.WithAllowedUpdates(tgbot.AllowedUpdates{

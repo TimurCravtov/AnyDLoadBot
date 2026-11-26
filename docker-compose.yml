@@ -22,6 +22,11 @@ services:
       # (Deliberately not HTTPS_PROXY: Coolify passes variables to image builds,
       # and Docker would then try to pull base images through "warp".)
       FETCH_PROXY: ${FETCH_PROXY-socks5://warp:1080}
+      # Telegram's API (receiving messages, sending and uploading videos/music)
+      # goes through WARP as well: from some servers, api.telegram.org answers
+      # every getUpdates with "502 Bad Gateway" when reached directly. Set
+      # TELEGRAM_PROXY to an empty value to connect to Telegram directly.
+      TELEGRAM_PROXY: ${TELEGRAM_PROXY-socks5://warp:1080}
       # Optional cookies.txt paths inside the container (needs a volume added to
       # this file). Empty means "not used".
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}

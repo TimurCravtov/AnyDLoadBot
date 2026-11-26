@@ -32,9 +32,13 @@ type Config struct {
 	// YtDlpProxy optionally routes yt-dlp through a proxy (http, https, socks5).
 	YtDlpProxy string
 	// FetchProxy optionally routes the bot's own web requests (Pinterest, X,
-	// previews) through a proxy. Telegram's API is never proxied. (Not named
+	// previews) through a proxy. Telegram's API uses TelegramProxy. (Not named
 	// HTTPS_PROXY: Docker treats that name specially during image builds.)
 	FetchProxy string
+	// TelegramProxy optionally routes all Telegram Bot API traffic (polling,
+	// messages, uploads) through a proxy, for servers that can't reach
+	// api.telegram.org reliably (getUpdates failing with 502 Bad Gateway).
+	TelegramProxy string
 	// InstagramCookies is an optional path to a Netscape cookies.txt from a
 	// logged-in browser, needed for Instagram posts that require login.
 	InstagramCookies string
@@ -193,15 +197,22 @@ func load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	// yt-dlp understands socks4; Go's HTTP client (FETCH_PROXY, TELEGRAM_PROXY) doesn't.
+	goSchemes := []string{"http", "https", "socks5", "socks5h"}
 	for _, p := range []struct {
-		env string
-		dst *string
-	}{{"YTDLP_PROXY", &cfg.YtDlpProxy}, {"FETCH_PROXY", &cfg.FetchProxy}} {
+		env     string
+		dst     *string
+		schemes []string
+	}{
+		{"YTDLP_PROXY", &cfg.YtDlpProxy, append([]string{"socks4"}, goSchemes...)},
+		{"FETCH_PROXY", &cfg.FetchProxy, goSchemes},
+		{"TELEGRAM_PROXY", &cfg.TelegramProxy, goSchemes},
+	} {
 		v := strings.TrimSpace(getenv(p.env))
 		if v == "" {
 			continue
 		}
-		if u, err := url.Parse(v); err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks4", "socks5", "socks5h"}, u.Scheme) {
+		if u, err := url.Parse(v); err != nil || u.Host == "" || !slices.Contains(p.schemes, u.Scheme) {
 			errs = append(errs, fmt.Errorf("%s: must look like http://host:port or socks5://host:port", p.env))
 			continue
 		}

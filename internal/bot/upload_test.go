@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestUploadProgressTransport(t *testing.T) {
 		defer mu.Unlock()
 		reports = append(reports, p)
 	})
-	client := newAPIClient()
+	client := newAPIClient(nil)
 	body := bytes.Repeat([]byte("v"), 300_000)
 
 	send := func(ctx context.Context) {
@@ -76,7 +77,21 @@ func TestAPIClientHasNoOverallTimeout(t *testing.T) {
 	t.Parallel()
 
 	// A whole-request timeout would cut off large uploads on slow links.
-	if c := newAPIClient(); c.Timeout != 0 {
+	if c := newAPIClient(nil); c.Timeout != 0 {
 		t.Errorf("client timeout = %v, want none", c.Timeout)
+	}
+}
+
+func TestAPIClientProxy(t *testing.T) {
+	t.Parallel()
+
+	// Every API request, polling and uploads alike, goes through the proxy.
+	proxy := &url.URL{Scheme: "socks5", Host: "warp:1080"}
+	req := httptest.NewRequest(http.MethodPost, "https://api.telegram.org/botTOKEN/getUpdates", nil)
+
+	tr := newAPIClient(proxy).Transport.(uploadProgressTransport).base.(*http.Transport)
+	got, err := tr.Proxy(req)
+	if err != nil || got == nil || got.String() != proxy.String() {
+		t.Errorf("proxy for API request = %v (err %v), want %v", got, err, proxy)
 	}
 }

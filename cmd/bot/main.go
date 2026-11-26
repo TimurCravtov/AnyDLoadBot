@@ -42,8 +42,17 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, bot.WithStorageChat(cfg.StorageChatID),
-		bot.WithLimits(cfg.MaxUserDownloads, cfg.MaxTotalDownloads))
+	botOpts := []bot.Option{bot.WithStorageChat(cfg.StorageChatID), bot.WithLimits(cfg.MaxUserDownloads, cfg.MaxTotalDownloads)}
+	if cfg.TelegramProxy != "" {
+		u, err := url.Parse(cfg.TelegramProxy) // already validated by config.Load
+		if err != nil {
+			return fmt.Errorf("TELEGRAM_PROXY: %w", err)
+		}
+		botOpts = append(botOpts, bot.WithAPIProxy(u))
+		log.Info("Telegram API requests go through a proxy", "proxy", u.Host) // host only: no credentials
+	}
+
+	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, botOpts...)
 	if err != nil {
 		return err
 	}

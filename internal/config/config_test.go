@@ -45,6 +45,11 @@ func TestLoad(t *testing.T) {
 		{name: "fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "socks5://warp:1080"}, want: Config{
 			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, FetchProxy: "socks5://warp:1080",
 		}},
+		{name: "telegram proxy", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_PROXY": " socks5://warp:1080 "}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, TelegramProxy: "socks5://warp:1080",
+		}},
+		{name: "bad telegram proxy", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_PROXY": "warp:1080"}, wantErr: true},
+		{name: "socks4 telegram proxy", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_PROXY": "socks4://warp:1080"}, wantErr: true},
 		{name: "bad fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "warp:1080"}, wantErr: true},
 		{name: "proxy without scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "10.0.0.1:1080"}, wantErr: true},
 		{name: "proxy with a strange scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "ftp://10.0.0.1"}, wantErr: true},
