@@ -69,10 +69,11 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?set TELEGRAM_API_ID (my.telegram.org, API development tools)}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?set TELEGRAM_API_HASH (my.telegram.org, API development tools)}
       TELEGRAM_LOCAL: "1"
-      # Coolify hands every service all of the app's variables, and this image
-      # turns TELEGRAM_PROXY (meant for the bot) into its webhook --proxy
-      # option, which then fails to start. Empty means no flag.
-      TELEGRAM_PROXY: ""
+    # Coolify hands every service all of the app's variables (overriding values
+    # set here), and this image turns TELEGRAM_PROXY, meant for the bot, into its
+    # webhook --proxy option, with which it fails to start. So drop it before
+    # the image's own entrypoint runs.
+    entrypoint: ["/bin/sh", "-c", "unset TELEGRAM_PROXY; exec /docker-entrypoint.sh"]
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
 
