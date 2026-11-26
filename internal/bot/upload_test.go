@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -93,5 +94,32 @@ func TestAPIClientProxy(t *testing.T) {
 	got, err := tr.Proxy(req)
 	if err != nil || got == nil || got.String() != proxy.String() {
 		t.Errorf("proxy for API request = %v (err %v), want %v", got, err, proxy)
+	}
+}
+
+func TestLogOut(t *testing.T) {
+	t.Parallel()
+
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		if r.URL.Path == "/botGOOD/logOut" {
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":401,"description":"Unauthorized"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if err := logOut(context.Background(), srv.URL, "GOOD", newAPIClient(nil)); err != nil || path != "/botGOOD/logOut" {
+		t.Errorf("logOut() = %v (path %s)", err, path)
+	}
+	if err := logOut(context.Background(), srv.URL, "BAD", newAPIClient(nil)); err == nil || !strings.Contains(err.Error(), "Unauthorized") {
+		t.Errorf("logOut() with a bad token = %v, want Telegram's error", err)
+	}
+	// A network error must not reveal the token, which is part of the URL.
+	if err := logOut(context.Background(), "http://127.0.0.1:1", "SECRET", newAPIClient(nil)); err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Errorf("logOut() error = %v, want one without the token", err)
 	}
 }

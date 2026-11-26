@@ -3,8 +3,12 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -68,6 +72,51 @@ func WithStorageChat(chatID int64) Option {
 // example when getUpdates keeps failing with "502 Bad Gateway".
 func WithAPIProxy(proxy *url.URL) Option {
 	return func(o *options) { o.apiProxy = proxy }
+}
+
+// WithAPIServer makes the bot talk to a local Telegram Bot API server (for
+// example http://telegram-bot-api:8081) instead of api.telegram.org. Uploads
+// then only travel to that server, which sends them on to Telegram itself.
+// The bot must have been logged out of api.telegram.org once (LogOutCloud).
+func WithAPIServer(serverURL string) Option {
+	return func(o *options) { o.api = append(o.api, tgbot.WithServerURL(serverURL)) }
+}
+
+// LogOutCloud logs the bot out of Telegram's public Bot API server, which a
+// bot must do once before it uses a local Bot API server. Afterwards it can't
+// log back in to the public server for 10 minutes. proxy may be nil.
+func LogOutCloud(ctx context.Context, token string, proxy *url.URL) error {
+	return logOut(ctx, cloudAPI, token, newAPIClient(proxy))
+}
+
+const cloudAPI = "https://api.telegram.org"
+
+func logOut(ctx context.Context, server, token string, client *http.Client) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server+"/bot"+token+"/logOut", nil)
+	if err != nil {
+		return errors.New("invalid bot token") // never echo the URL: it holds the token
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err // drop the URL, which holds the token
+		}
+		return fmt.Errorf("log out: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r); err != nil {
+		return fmt.Errorf("log out: %s", resp.Status)
+	}
+	if !r.OK {
+		return fmt.Errorf("log out: %s", r.Description)
+	}
+	return nil
 }
 
 // withAPIOptions passes extra options to the Telegram client (used by tests).

@@ -42,14 +42,36 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	botOpts := []bot.Option{bot.WithStorageChat(cfg.StorageChatID), bot.WithLimits(cfg.MaxUserDownloads, cfg.MaxTotalDownloads)}
+	var proxy *url.URL
 	if cfg.TelegramProxy != "" {
-		u, err := url.Parse(cfg.TelegramProxy) // already validated by config.Load
-		if err != nil {
+		if proxy, err = url.Parse(cfg.TelegramProxy); err != nil { // already validated by config.Load
 			return fmt.Errorf("TELEGRAM_PROXY: %w", err)
 		}
-		botOpts = append(botOpts, bot.WithAPIProxy(u))
-		log.Info("Telegram API requests go through a proxy", "proxy", u.Host) // host only: no credentials
+	}
+
+	// "bot logout-cloud": the one-time step before using a local Bot API server.
+	if len(os.Args) > 1 && os.Args[1] == "logout-cloud" {
+		if err := bot.LogOutCloud(ctx, cfg.Token, proxy); err != nil {
+			return err
+		}
+		fmt.Println("Logged out of api.telegram.org. The bot can now use the local Bot API server " +
+			"(and can't log back in to api.telegram.org for 10 minutes).")
+		return nil
+	}
+
+	botOpts := []bot.Option{bot.WithStorageChat(cfg.StorageChatID), bot.WithLimits(cfg.MaxUserDownloads, cfg.MaxTotalDownloads)}
+	switch {
+	case cfg.TelegramAPIURL != "":
+		// The local server is on the compose network; a proxy couldn't reach it.
+		botOpts = append(botOpts, bot.WithAPIServer(cfg.TelegramAPIURL))
+		u, _ := url.Parse(cfg.TelegramAPIURL)
+		log.Info("Telegram API requests go to a local Bot API server", "server", u.Host)
+		if proxy != nil {
+			log.Info("TELEGRAM_PROXY is not used with a local Bot API server")
+		}
+	case proxy != nil:
+		botOpts = append(botOpts, bot.WithAPIProxy(proxy))
+		log.Info("Telegram API requests go through a proxy", "proxy", proxy.Host) // host only: no credentials
 	}
 
 	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, botOpts...)

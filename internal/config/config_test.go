@@ -55,6 +55,11 @@ func TestLoad(t *testing.T) {
 		}},
 		{name: "pot server without scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_POT_URL": "pot:4416"}, wantErr: true},
 		{name: "socks pot server", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_POT_URL": "socks5://pot:4416"}, wantErr: true},
+		{name: "local bot api server", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_API_URL": "http://telegram-bot-api:8081"}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100,
+			TelegramAPIURL: "http://telegram-bot-api:8081",
+		}},
+		{name: "bad bot api server", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_API_URL": "telegram-bot-api:8081"}, wantErr: true},
 		{name: "bad fetch proxy", env: map[string]string{"BOT_TOKEN": "t", "FETCH_PROXY": "warp:1080"}, wantErr: true},
 		{name: "proxy without scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "10.0.0.1:1080"}, wantErr: true},
 		{name: "proxy with a strange scheme", env: map[string]string{"BOT_TOKEN": "t", "YTDLP_PROXY": "ftp://10.0.0.1"}, wantErr: true},

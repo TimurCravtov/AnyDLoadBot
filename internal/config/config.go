@@ -39,6 +39,12 @@ type Config struct {
 	// messages, uploads) through a proxy, for servers that can't reach
 	// api.telegram.org reliably (getUpdates failing with 502 Bad Gateway).
 	TelegramProxy string
+	// TelegramAPIURL is a local Telegram Bot API server
+	// (https://github.com/tdlib/telegram-bot-api), e.g.
+	// http://telegram-bot-api:8081. The bot then talks only to it, and it
+	// uploads to Telegram itself; TelegramProxy is not used. "" means
+	// Telegram's public server, api.telegram.org.
+	TelegramAPIURL string
 	// YtDlpPOTServer is an optional bgutil PO token server URL for YouTube
 	// (see ytdlp.Options.POTServer).
 	YtDlpPOTServer string
@@ -211,6 +217,7 @@ func load(getenv func(string) string) (Config, error) {
 		{"FETCH_PROXY", &cfg.FetchProxy, goSchemes},
 		{"TELEGRAM_PROXY", &cfg.TelegramProxy, goSchemes},
 		{"YTDLP_POT_URL", &cfg.YtDlpPOTServer, []string{"http", "https"}},
+		{"TELEGRAM_API_URL", &cfg.TelegramAPIURL, []string{"http", "https"}},
 	} {
 		v := strings.TrimSpace(getenv(p.env))
 		if v == "" {
