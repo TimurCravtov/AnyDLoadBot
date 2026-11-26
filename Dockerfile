@@ -9,14 +9,17 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bot ./cmd/bot
 FROM debian:12-slim
 
 # yt-dlp is pinned to one version, and the download is verified against its
-# SHA-256 (from the release's SHA2-256SUMS file). It is the standalone
-# "yt-dlp_linux" build, which bundles Python and curl_cffi: TikTok (and other
-# sites) need curl_cffi's browser impersonation, which the plain script lacks.
+# SHA-256 (from the release's SHA2-256SUMS file). It is the "yt-dlp_linux.zip"
+# build, which bundles Python, curl_cffi and the YouTube challenge solver:
+# TikTok (and other sites) need curl_cffi's browser impersonation, which the
+# plain script lacks. The zip is the unpacked form of the single-file
+# "yt-dlp_linux": the same program, but it starts about a second faster on
+# every run, because it doesn't unpack itself into /tmp first.
 # To upgrade, change BOTH:
 #   version:  https://github.com/yt-dlp/yt-dlp/releases
-#   checksum: the "yt-dlp_linux" line of that release's SHA2-256SUMS
+#   checksum: the "yt-dlp_linux.zip" line of that release's SHA2-256SUMS
 ARG YTDLP_VERSION=2026.11.23
-ARG YTDLP_SHA256=249ddb058234276bc449b9cd9492aad9f133bda5923c61a9e39983ae114ef17d
+ARG YTDLP_SHA256=cc4a3aa98fb438a1dac04a6fb006fe57acbeed00fc12db9ec84e3036dbbe6ccb
 
 # yt-dlp needs a JavaScript runtime to solve YouTube's challenges; without one,
 # stream URLs often fail with "HTTP Error 403". Deno is the runtime yt-dlp uses
@@ -37,9 +40,13 @@ ARG BGUTIL_SHA256=a26b980bf6d8e8400d8f21445daa4d8381bf6183d20f0be309391f86b31e27
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip ffmpeg \
-    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
-    && echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
-    && chmod 0755 /usr/local/bin/yt-dlp \
+    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux.zip" -o /tmp/yt-dlp.zip \
+    && echo "${YTDLP_SHA256}  /tmp/yt-dlp.zip" | sha256sum -c - \
+    && unzip -q /tmp/yt-dlp.zip -d /opt/yt-dlp \
+    && chmod -R a+rX /opt/yt-dlp \
+    && chmod 0755 /opt/yt-dlp/yt-dlp_linux \
+    && ln -s /opt/yt-dlp/yt-dlp_linux /usr/local/bin/yt-dlp \
+    && rm /tmp/yt-dlp.zip \
     && curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip" -o /tmp/deno.zip \
     && echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c - \
     && unzip -q /tmp/deno.zip -d /usr/local/bin \
@@ -59,6 +66,6 @@ USER bot
 # passed at run time, so no secrets are baked into the image:
 #   docker run --env-file .env anydloadbot
 ENV LOG_FORMAT=json \
-    YTDLP_PATH=/usr/local/bin/yt-dlp
+    YTDLP_PATH=/opt/yt-dlp/yt-dlp_linux
 
 ENTRYPOINT ["bot"]

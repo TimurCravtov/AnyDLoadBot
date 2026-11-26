@@ -77,6 +77,9 @@ type fakeTelegram struct {
 	mu     sync.Mutex
 	calls  []fakeCall
 	msgIDs int
+	// rejectURLs makes sendVideo fail for URLs, like Telegram does when it
+	// can't fetch them.
+	rejectURLs bool
 }
 
 type fakeCall struct {
@@ -106,9 +109,14 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	f.calls = append(f.calls, call)
+	reject := f.rejectURLs
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
+	if reject && strings.HasPrefix(call.fields["video"], "https://") {
+		fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: failed to get HTTP URL content"}`)
+		return
+	}
 	chat := fmt.Sprintf(`"message_id":1,"date":0,"chat":{"id":%d,"type":"private"}`, storageChat)
 	switch call.method {
 	case "sendVideo":

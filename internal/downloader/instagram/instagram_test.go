@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"anydloadbot/internal/downloader"
@@ -49,6 +50,7 @@ const link = "https://www.instagram.com/p/Dfm3F4vB-03/"
 // fails with err.
 type fakeYtDlp struct {
 	err     error
+	print   string // output for --print runs (direct URL lookups)
 	calls   [][]string
 	cookies []string // contents of the --cookies file at the time of each run
 }
@@ -62,6 +64,9 @@ func (f *fakeYtDlp) run(_ context.Context, args ...string) ([]byte, error) {
 	}
 	if f.err != nil {
 		return nil, f.err
+	}
+	if !slices.Contains(args, "-P") { // a lookup, not a download
+		return []byte(f.print), nil
 	}
 	path := filepath.Join(args[slices.Index(args, "-P")+1], "Dfm3F4vB-03.mp4")
 	if err := os.WriteFile(path, []byte("video"), 0o600); err != nil {
@@ -171,5 +176,66 @@ func TestPreview(t *testing.T) {
 	dead := newTestProvider(t, &fakeYtDlp{}, "http://127.0.0.1:1")
 	if _, ok := dead.Preview(context.Background(), link); ok {
 		t.Error("Preview() succeeded without a reachable thumbnail")
+	}
+}
+
+func TestMediaURLVideo(t *testing.T) {
+	t.Parallel()
+
+	const cdn = "https://scontent-ams2-1.cdninstagram.com/o1/v/t16/f2/m86/v.mp4?oh=x&oe=y"
+	f := &fakeYtDlp{print: "https\tmp4\t5242880\t" + cdn + "\n"}
+	src, err := newTestProvider(t, f, "").MediaURL(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Kind != downloader.KindVideo || src.URL != cdn || src.MimeType != "video/mp4" {
+		t.Errorf("MediaURL() = %+v", src)
+	}
+	args := f.calls[0]
+	if i := slices.Index(args, "-f"); i < 0 || args[i+1] != directFormat {
+		t.Errorf("unexpected format selector: %v", args)
+	}
+	if len(f.cookies) != 1 {
+		t.Errorf("yt-dlp did not receive the configured cookies")
+	}
+}
+
+func TestMediaURLRefusals(t *testing.T) {
+	t.Parallel()
+
+	for name, out := range map[string]string{
+		"too big for telegram's URL fetch": "https\tmp4\t30000000\thttps://x.cdninstagram.com/v.mp4\n",
+		"not instagram's CDN":              "https\tmp4\t100\thttps://evil.example/v.mp4\n",
+		"not mp4":                          "https\twebm\t100\thttps://x.fbcdn.net/v.webm\n",
+		"needs a merge":                    "https+https\tmp4\tNA\tNA\n",
+	} {
+		if src, err := newTestProvider(t, &fakeYtDlp{print: out}, "").MediaURL(context.Background(), link); err == nil {
+			t.Errorf("%s: MediaURL() = %+v, want an error", name, src)
+		}
+	}
+}
+
+func TestMediaURLImagePost(t *testing.T) {
+	t.Parallel()
+
+	// The media endpoint redirects to the picture. Here it lands on a test
+	// server, which is not Instagram's CDN, so Telegram must not be sent there;
+	// a CDN URL would be returned as a photo (not tested: that needs the internet).
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("img")) }))
+	t.Cleanup(img.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, img.URL+"/photo.jpg", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newTestProvider(t, &fakeYtDlp{err: errors.New("There is no video in this post")}, srv.URL)
+	if src, err := p.MediaURL(context.Background(), link); err == nil {
+		t.Errorf("MediaURL() = %+v, want an error for a picture outside the CDN", src)
+	}
+
+	// Other yt-dlp errors are passed on; there is no picture lookup.
+	p = newTestProvider(t, &fakeYtDlp{err: errors.New("unable to download webpage: timed out")}, "http://127.0.0.1:1")
+	if _, err := p.MediaURL(context.Background(), link); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, want the yt-dlp error", err)
 	}
 }

@@ -104,6 +104,38 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	}
 	_, _ = api.SendChatAction(ctx, &tgbot.SendChatActionParams{ChatID: chatID, Action: action})
 
+	took := func() time.Duration { return time.Since(start).Round(time.Millisecond) }
+	key := cacheKey(link, audio)
+
+	// Sent before (here or inline): Telegram still has the file.
+	if f, ok := b.files.get(key); ok {
+		if _, err := b.deliver(ctx, api, chatID, u.Message.ID, fromCache(f)); err == nil {
+			log.Info("media sent", "kind", f.kind, "via", "cache", "took", took())
+			return
+		} else if job.wasCancelled() {
+			return
+		} else {
+			log.Warn("cached file not accepted, downloading again", "err", err)
+		}
+	}
+
+	// Telegram fetches the file from the site itself: nothing passes through here.
+	if l, ok := provider.(downloader.Linker); ok && !audio {
+		f, err := b.sendDirect(ctx, api, chatID, u.Message.ID, l, link)
+		if err == nil {
+			if f.fileID != "" {
+				b.files.put(key, f)
+			}
+			log.Info("media sent", "kind", f.kind, "via", "url", "took", took())
+			return
+		}
+		if job.wasCancelled() {
+			log.Info("download cancelled by the user")
+			return
+		}
+		log.Info("direct URL not used, downloading instead", "reason", err)
+	}
+
 	media, err := download(ctx, link)
 	if err != nil {
 		if job.wasCancelled() {
@@ -112,16 +144,18 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		}
 		text, unexpected := failureText(err)
 		if unexpected {
-			log.Error("download failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
+			log.Error("download failed", "err", err, "took", took())
 		} else {
 			log.Warn("download rejected", "err", err)
 		}
 		b.reply(ctx, api, u, text)
 		return
 	}
+	downloaded := took()
 
 	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
-	if err := b.sendMedia(withUpload(ctx), api, chatID, u.Message.ID, media); err != nil {
+	f, err := b.deliver(withUpload(ctx), api, chatID, u.Message.ID, fromMedia(media))
+	if err != nil {
 		if job.wasCancelled() {
 			log.Info("upload cancelled by the user")
 			return
@@ -130,7 +164,11 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		b.reply(ctx, api, u, downloadFailed)
 		return
 	}
-	log.Info("media sent", "kind", media.Kind, "bytes", len(media.Data), "took", time.Since(start).Round(time.Millisecond))
+	if f.fileID != "" {
+		b.files.put(key, f)
+	}
+	log.Info("media sent", "kind", media.Kind, "via", "upload", "bytes", len(media.Data),
+		"download_took", downloaded, "took", took())
 }
 
 var (

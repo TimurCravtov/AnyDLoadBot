@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -305,6 +306,46 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 		return nil, fmt.Errorf("read downloaded file: %w", err)
 	}
 	return &File{Name: filepath.Base(file), Data: data}, nil
+}
+
+// Direct is a single downloadable file, as yt-dlp resolved it.
+type Direct struct {
+	URL  string
+	Ext  string // e.g. "mp4"
+	Size int64  // bytes, exact or estimated; 0 if unknown
+}
+
+// errNotSingleFile means the chosen format is not one file at one URL (it
+// would need a merge, or the site streams it in pieces).
+var errNotSingleFile = errors.New("format is not a single file")
+
+// DirectURL resolves link to the URL of one file in req.Format, without
+// downloading anything. Formats that need merging are refused, so req.Format
+// should pick a file that has both video and audio.
+func (c *Client) DirectURL(ctx context.Context, link string, req Request) (*Direct, error) {
+	args := []string{"--no-playlist", "--no-warnings", "-f", req.Format}
+	if req.Sort != "" {
+		args = append(args, "-S", req.Sort)
+	}
+	args = append(args, req.Extra...)
+	args = append(args,
+		"--print", "%(protocol)s\t%(ext)s\t%(filesize,filesize_approx)s\t%(url)s",
+		"--", link)
+
+	out, err := c.exec(ctx, args)
+	if err != nil {
+		return nil, Classify(err)
+	}
+	fields := strings.SplitN(lastLine(out), "\t", 4)
+	if len(fields) != 4 {
+		return nil, fmt.Errorf("unexpected yt-dlp output %q", lastLine(out))
+	}
+	proto, ext, size, u := fields[0], fields[1], fields[2], fields[3]
+	// Merged formats have no single url; m3u8/dash are playlists, not files.
+	if !strings.HasPrefix(u, "https://") || proto != "https" {
+		return nil, errNotSingleFile
+	}
+	return &Direct{URL: u, Ext: ext, Size: parseCount(size)}, nil
 }
 
 // Classify turns yt-dlp failures about the media itself into downloader.ErrNoMedia

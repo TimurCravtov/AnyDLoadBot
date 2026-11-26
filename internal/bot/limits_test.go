@@ -210,8 +210,9 @@ func TestGlobalLimit(t *testing.T) {
 	close(p.release)
 	wait()
 
-	// Once the slot is free, the next request goes through.
-	runChat(b, 3, 6)()
+	// Once the slot is free, the next request goes through. (Another link: the
+	// first one is cached now and would be sent without a download.)
+	b.handleDefault(context.Background(), b.api, chatMessage(3, 6, "block://y"))
 	if p.started.Load() != 2 {
 		t.Errorf("download after the slot freed did not start (%d started)", p.started.Load())
 	}

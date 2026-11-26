@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -220,7 +221,7 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	})
 	defer stopProgress()
 
-	file, err := b.storedMedia(ctx, api, download, link, audio)
+	file, err := b.storedMedia(ctx, api, provider, download, link, audio)
 	stopProgress()
 	if err != nil {
 		if job.wasCancelled() {
@@ -250,15 +251,26 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	log.Info("inline media sent", "took", time.Since(start).Round(time.Millisecond))
 }
 
-// storedMedia downloads the link and uploads it to the storage chat, returning
-// the file_id Telegram assigned. Results are cached per link and format.
-func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, download func(context.Context, string) (*downloader.Media, error), link string, audio bool) (cachedFile, error) {
-	key := link
-	if audio {
-		key += "|mp3"
-	}
+// storedMedia gets the link's file into the storage chat and returns the
+// file_id Telegram assigned. Results are cached per link and format. Where
+// the provider has a direct URL, Telegram fetches the file itself; otherwise
+// it is downloaded here and uploaded.
+func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, provider downloader.Provider, download func(context.Context, string) (*downloader.Media, error), link string, audio bool) (cachedFile, error) {
+	key := cacheKey(link, audio)
 	if f, ok := b.files.get(key); ok {
 		return f, nil
+	}
+
+	if l, ok := provider.(downloader.Linker); ok && !audio {
+		f, err := b.sendDirect(ctx, api, b.storageChatID, 0, l, link)
+		if err == nil && f.fileID != "" {
+			b.files.put(key, f)
+			return f, nil
+		}
+		if ctx.Err() != nil {
+			return cachedFile{}, ctx.Err()
+		}
+		b.log.Info("direct URL not used, downloading instead", "link", link, "reason", err)
 	}
 
 	media, err := download(ctx, link)
@@ -266,12 +278,13 @@ func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, download func(con
 		return cachedFile{}, err
 	}
 	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
-	fileID, err := b.uploadToStorage(withUpload(ctx), api, media)
+	f, err := b.deliver(withUpload(ctx), api, b.storageChatID, 0, fromMedia(media))
 	if err != nil {
-		return cachedFile{}, err
+		return cachedFile{}, fmt.Errorf("upload to storage chat: %w", err)
 	}
-
-	f := cachedFile{kind: media.Kind, fileID: fileID, title: media.Title, performer: media.Performer, duration: media.Duration}
+	if f.fileID == "" {
+		return cachedFile{}, errNoFileID
+	}
 	b.files.put(key, f)
 	return f, nil
 }

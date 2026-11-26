@@ -208,3 +208,52 @@ func TestClassifySilentVideoIsNoMedia(t *testing.T) {
 		t.Error("an unrelated failure was classified as no media")
 	}
 }
+
+func TestDirectURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, out string
+		want      *Direct
+	}{
+		{name: "single file", out: "https\tmp4\t1234\thttps://cdn.example/v.mp4?sig=a\tb\n",
+			want: &Direct{URL: "https://cdn.example/v.mp4?sig=a\tb", Ext: "mp4", Size: 1234}},
+		{name: "size unknown", out: "https\tmp4\tNA\thttps://cdn.example/v.mp4\n",
+			want: &Direct{URL: "https://cdn.example/v.mp4", Ext: "mp4"}},
+		{name: "merged formats have no single url", out: "https+https\tmp4\tNA\tNA\n"},
+		{name: "playlists are not files", out: "m3u8_native\tmp4\tNA\thttps://cdn.example/v.m3u8\n"},
+		{name: "plain http", out: "http\tmp4\tNA\thttp://cdn.example/v.mp4\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var args []string
+			c := NewWithRunner(func(_ context.Context, a ...string) ([]byte, error) {
+				args = a
+				return []byte(tt.out), nil
+			}, 1, "--proxy", "socks5://warp:1080")
+
+			got, err := c.DirectURL(context.Background(), "https://example.com/v", Request{Format: "0/b", Sort: "res:720"})
+			if tt.want == nil {
+				if err == nil {
+					t.Fatalf("DirectURL() = %+v, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *got != *tt.want {
+				t.Errorf("DirectURL() = %+v, want %+v", got, tt.want)
+			}
+			// Nothing is downloaded, and the defaults (the proxy) still apply.
+			if slices.Contains(args, "-P") || slices.Contains(args, "--no-simulate") || !slices.Contains(args, "--proxy") {
+				t.Errorf("unexpected arguments: %v", args)
+			}
+			if i := slices.Index(args, "-f"); i < 0 || args[i+1] != "0/b" {
+				t.Errorf("format not passed: %v", args)
+			}
+		})
+	}
+}

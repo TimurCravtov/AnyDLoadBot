@@ -24,6 +24,9 @@ const (
 	// Telegram; the DASH streams are VP9 video-only. The rest are fallbacks.
 	formatSelector = "0/bv*+ba/b"
 	formatSort     = "res:720,ext:mp4:m4a"
+	// directFormat is formatSelector without the merge: a direct URL has to be
+	// one file with both video and sound.
+	directFormat = "0/b[ext=mp4]"
 )
 
 var (
@@ -57,6 +60,7 @@ var (
 	_ downloader.Provider        = (*Provider)(nil)
 	_ downloader.Previewer       = (*Provider)(nil)
 	_ downloader.AudioDownloader = (*Provider)(nil)
+	_ downloader.Linker          = (*Provider)(nil)
 )
 
 // New creates an Instagram provider on top of a shared yt-dlp client.
@@ -66,12 +70,14 @@ func New(yt *ytdlp.Client, opts Options) *Provider {
 		cookies:  opts.Cookies,
 		siteBase: siteBase,
 		fetch: downloader.NewFetcher(func(host string) bool {
-			host = strings.ToLower(host)
-			return isInstagramHost(host) ||
-				strings.HasSuffix(host, ".cdninstagram.com") ||
-				strings.HasSuffix(host, ".fbcdn.net")
+			return isInstagramHost(host) || isCDNHost(host)
 		}),
 	}
+}
+
+func isCDNHost(host string) bool {
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, ".cdninstagram.com") || strings.HasSuffix(host, ".fbcdn.net")
 }
 
 // Name implements downloader.Provider.
@@ -167,6 +173,53 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	default:
 		return nil, err
 	}
+}
+
+// MediaURL implements downloader.Linker: the post's video file on Instagram's
+// CDN, or for image posts the picture, for Telegram to fetch itself.
+func (p *Provider) MediaURL(ctx context.Context, link string) (*downloader.Source, error) {
+	id, ok := parsePostID(link)
+	if !ok {
+		return nil, fmt.Errorf("not an Instagram link: %q", link)
+	}
+
+	release, err := p.yt.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req := ytdlp.Request{Format: directFormat, Sort: formatSort}
+	if p.cookies != "" {
+		req.Extra = []string{"--cookies", p.cookies}
+	}
+	d, err := p.yt.DirectURL(ctx, link, req)
+	release()
+
+	switch {
+	case err == nil:
+	case noVideoRe.MatchString(err.Error()):
+		img, err := p.fetch.FinalURL(ctx, p.mediaURL(id))
+		if err != nil {
+			return nil, fmt.Errorf("image URL: %w", err)
+		}
+		if u, err := url.Parse(img); err != nil || u.Scheme != "https" || !isCDNHost(u.Hostname()) {
+			return nil, fmt.Errorf("image URL %q is not on Instagram's CDN", img)
+		}
+		return &downloader.Source{Kind: downloader.KindPhoto, URL: img}, nil
+	default:
+		return nil, err
+	}
+
+	if u, err := url.Parse(d.URL); err != nil || !isCDNHost(u.Hostname()) {
+		return nil, fmt.Errorf("video URL is not on Instagram's CDN: %q", d.URL)
+	}
+	if d.Ext != "mp4" {
+		return nil, fmt.Errorf("video is %s, not mp4", d.Ext)
+	}
+	if d.Size > downloader.MaxURLSize {
+		// Not ErrTooLarge: up to downloader.MaxSize it can still be uploaded.
+		return nil, fmt.Errorf("%d bytes is more than Telegram fetches from a URL", d.Size)
+	}
+	return &downloader.Source{Kind: downloader.KindVideo, URL: d.URL, MimeType: "video/mp4"}, nil
 }
 
 // DownloadAudio implements downloader.AudioDownloader: the post's sound as MP3,

@@ -86,6 +86,20 @@ type Resolver interface {
 	Resolve(ctx context.Context, link string) (*Source, error)
 }
 
+// MaxURLSize is the largest file Telegram fetches from a URL on a bot's behalf
+// (sendVideo/sendPhoto with an HTTP URL); bigger files have to be uploaded.
+const MaxURLSize = 20 << 20
+
+// Linker is implemented by providers that can usually hand Telegram a direct
+// URL to fetch the media from. That skips downloading the file and uploading
+// it again, which is most of the time a send takes. The bot falls back to
+// Download when MediaURL fails or Telegram can't fetch the URL.
+type Linker interface {
+	// MediaURL returns a direct URL for the media behind a link returned by
+	// FindURL, for a file of at most MaxURLSize as far as the provider knows.
+	MediaURL(ctx context.Context, link string) (*Source, error)
+}
+
 // Preview is a cheap placeholder shown in inline mode while the real media is
 // still being downloaded.
 type Preview struct {
