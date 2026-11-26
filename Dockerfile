@@ -26,6 +26,15 @@ ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c679
 ARG DENO_VERSION=2.9.8
 ARG DENO_SHA256=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
 
+# YouTube withholds the streams from logged-in servers without a PO token. This
+# yt-dlp plugin gets the tokens from the "pot" service in docker-compose.yml
+# (see YTDLP_POT_URL). Pinned and verified the same way; keep it the same
+# version as that service's image. To upgrade, change BOTH:
+#   version:  https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases
+#   checksum: the sha256 of that release's bgutil-ytdlp-pot-provider.zip
+ARG BGUTIL_VERSION=2.0.2
+ARG BGUTIL_SHA256=a26b980bf6d8e8400d8f21445daa4d8381bf6183d20f0be309391f86b31e27ef
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip ffmpeg \
     && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
@@ -36,6 +45,10 @@ RUN apt-get update \
     && unzip -q /tmp/deno.zip -d /usr/local/bin \
     && chmod 0755 /usr/local/bin/deno \
     && rm /tmp/deno.zip \
+    && mkdir -p /etc/yt-dlp/plugins \
+    && curl -fsSL "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/${BGUTIL_VERSION}/bgutil-ytdlp-pot-provider.zip" -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip \
+    && echo "${BGUTIL_SHA256}  /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip" | sha256sum -c - \
+    && chmod 0644 /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip \
     && apt-get purge -y curl unzip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/bot /usr/local/bin/bot

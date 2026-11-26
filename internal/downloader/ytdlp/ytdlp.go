@@ -58,6 +58,11 @@ type Options struct {
 	// Proxy routes every request through a proxy, e.g. http://host:3128 or
 	// socks5://host:1080. Useful when a site blocks the server's IP address.
 	Proxy string
+	// POTServer is the URL of a bgutil PO token server, e.g. http://pot:4416.
+	// YouTube withholds the streams from logged-in servers that can't show a
+	// PO token ("Requested format is not available"); yt-dlp's bgutil plugin
+	// (installed in the Docker image) gets the tokens from this server.
+	POTServer string
 }
 
 func (o Options) args() []string {
@@ -67,6 +72,9 @@ func (o Options) args() []string {
 	}
 	if o.Proxy != "" {
 		args = append(args, "--proxy", o.Proxy)
+	}
+	if o.POTServer != "" {
+		args = append(args, "--extractor-args", "youtubepot-bgutilhttp:base_url="+o.POTServer)
 	}
 	return args
 }

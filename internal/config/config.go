@@ -39,6 +39,9 @@ type Config struct {
 	// messages, uploads) through a proxy, for servers that can't reach
 	// api.telegram.org reliably (getUpdates failing with 502 Bad Gateway).
 	TelegramProxy string
+	// YtDlpPOTServer is an optional bgutil PO token server URL for YouTube
+	// (see ytdlp.Options.POTServer).
+	YtDlpPOTServer string
 	// InstagramCookies is an optional path to a Netscape cookies.txt from a
 	// logged-in browser, needed for Instagram posts that require login.
 	InstagramCookies string
@@ -207,6 +210,7 @@ func load(getenv func(string) string) (Config, error) {
 		{"YTDLP_PROXY", &cfg.YtDlpProxy, append([]string{"socks4"}, goSchemes...)},
 		{"FETCH_PROXY", &cfg.FetchProxy, goSchemes},
 		{"TELEGRAM_PROXY", &cfg.TelegramProxy, goSchemes},
+		{"YTDLP_POT_URL", &cfg.YtDlpPOTServer, []string{"http", "https"}},
 	} {
 		v := strings.TrimSpace(getenv(p.env))
 		if v == "" {

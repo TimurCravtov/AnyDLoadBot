@@ -75,7 +75,9 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 
 	// YouTube, Instagram and Spotify need yt-dlp and ffmpeg; without them, run
 	// without those sites.
-	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy})
+	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{
+		Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy, POTServer: cfg.YtDlpPOTServer,
+	})
 
 	// These sites need nothing but HTTP; Pinterest can also offer MP3 when yt-dlp is there.
 	var pin downloader.Provider = pinterest.New()

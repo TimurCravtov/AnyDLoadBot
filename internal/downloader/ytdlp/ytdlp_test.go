@@ -61,8 +61,11 @@ func TestOptionsArgs(t *testing.T) {
 	if got := (Options{}).args(); len(got) != 0 {
 		t.Errorf("empty options produce args: %v", got)
 	}
-	got := Options{Cookies: "c.txt", Proxy: "socks5://h:1"}.args()
-	want := []string{"--cookies", "c.txt", "--proxy", "socks5://h:1"}
+	got := Options{Cookies: "c.txt", Proxy: "socks5://h:1", POTServer: "http://pot:4416"}.args()
+	want := []string{
+		"--cookies", "c.txt", "--proxy", "socks5://h:1",
+		"--extractor-args", "youtubepot-bgutilhttp:base_url=http://pot:4416",
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
 	}
