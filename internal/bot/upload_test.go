@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	tgbot "github.com/go-telegram/bot"
 
 	"anydloadbot/internal/downloader"
 )
@@ -121,5 +124,52 @@ func TestLogOut(t *testing.T) {
 	// A network error must not reveal the token, which is part of the URL.
 	if err := logOut(context.Background(), "http://127.0.0.1:1", "SECRET", newAPIClient(nil)); err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Errorf("logOut() error = %v, want one without the token", err)
+	}
+}
+
+func TestWaitForAPI(t *testing.T) {
+	t.Parallel()
+
+	// Unreachable twice (a local Bot API server still starting), then up.
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/botBAD/getMe"):
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":401,"description":"Unauthorized"}`))
+		case calls <= 2:
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":502,"description":"Bad Gateway"}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"B","username":"anydl_bot"}}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	newBot := func(token string) *Bot {
+		b, err := New(token, downloader.NewRegistry(), newTestBot().log,
+			withAPIOptions(tgbot.WithServerURL(srv.URL)))
+		if err != nil {
+			t.Fatalf("New() = %v; it must not call Telegram", err)
+		}
+		b.apiRetry = time.Millisecond
+		return b
+	}
+
+	b := newBot("GOOD")
+	if err := b.waitForAPI(context.Background()); err != nil || b.username != "anydl_bot" {
+		t.Errorf("waitForAPI() = %v, username %q; want success after retries", err, b.username)
+	}
+	if calls != 3 {
+		t.Errorf("getMe calls = %d, want 3", calls)
+	}
+
+	// A rejected token is the one fatal error.
+	if err := newBot("BAD").waitForAPI(context.Background()); err == nil || !strings.Contains(err.Error(), "BOT_TOKEN") {
+		t.Errorf("waitForAPI() with a bad token = %v", err)
 	}
 }

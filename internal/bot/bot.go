@@ -30,6 +30,7 @@ type Bot struct {
 	jobs          *jobs
 	username      string        // set once in Run, before polling starts
 	progressEvery time.Duration // how often progress is shown; tests shorten it
+	apiRetry      time.Duration // first waitForAPI retry delay; tests shorten it
 
 	emoji    [numStatusKinds]customEmoji // custom status emoji; completed in Run (loadEmoji)
 	emojiOff atomic.Bool                 // set if Telegram refuses custom emoji for this bot
@@ -165,6 +166,9 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 			log.Error("telegram client error", "err", err)
 		}),
 		tgbot.WithMiddlewares(b.logUpdates),
+		// The token is checked in Run, with retries (waitForAPI): a local Bot API
+		// server may still be starting, and Telegram may be briefly unreachable.
+		tgbot.WithSkipGetMe(),
 		tgbot.WithHTTPClient(apiPollTimeout, newAPIClient(o.apiProxy)),
 		// Be explicit: if omitted, Telegram silently reuses whatever list was last
 		// set for this token, which can hide inline updates.
@@ -233,17 +237,47 @@ func isCommand(name string) tgbot.MatchFunc {
 	}
 }
 
-// loadUsername fetches the bot's @username so /help can show how to use inline mode.
-func (b *Bot) loadUsername(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, editTimeout)
-	defer cancel()
+// Retry delays for waitForAPI.
+const (
+	apiRetryFirst = time.Second
+	apiRetryMax   = 30 * time.Second
+	getMeTimeout  = 30 * time.Second
+)
 
-	me, err := b.api.GetMe(ctx)
-	if err != nil {
-		b.log.Warn("could not fetch bot username; /help will use a placeholder", "err", err)
-		return
+// waitForAPI checks the token with getMe and remembers the bot's @username
+// (for /help). While Telegram, or a local Bot API server that is still
+// starting, can't be reached, it logs why and tries again, so the bot stays up
+// and says what is wrong. Only a rejected token is fatal.
+func (b *Bot) waitForAPI(ctx context.Context) error {
+	delay := b.apiRetry
+	if delay <= 0 {
+		delay = apiRetryFirst
 	}
-	b.username = me.Username
+	for attempt := 1; ; attempt++ {
+		cctx, cancel := context.WithTimeout(ctx, getMeTimeout)
+		me, err := b.api.GetMe(cctx)
+		cancel()
+		switch {
+		case err == nil:
+			b.username = me.Username
+			if attempt > 1 {
+				b.log.Info("Telegram API reachable", "attempts", attempt)
+			}
+			return nil
+		case errors.Is(err, tgbot.ErrorUnauthorized):
+			return fmt.Errorf("telegram rejected BOT_TOKEN: %w", err)
+		case ctx.Err() != nil:
+			return ctx.Err()
+		}
+
+		b.log.Warn("Telegram API not reachable yet, retrying", "attempt", attempt, "err", err, "retry_in", delay)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		delay = min(delay*2, apiRetryMax)
+	}
 }
 
 // checkStorageChat warns at startup if the storage chat can't be reached, so a
@@ -265,12 +299,20 @@ func (b *Bot) checkStorageChat(ctx context.Context) {
 	b.log.Info("storage chat ok", "chat_id", b.storageChatID, "title", chat.Title)
 }
 
-// Run starts long polling and blocks until ctx is cancelled.
-func (b *Bot) Run(ctx context.Context) {
-	b.loadUsername(ctx)
+// Run starts long polling and blocks until ctx is cancelled. It returns early
+// only if Telegram rejects the token.
+func (b *Bot) Run(ctx context.Context) error {
+	b.log.Info("connecting to Telegram")
+	if err := b.waitForAPI(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil // stopped while waiting
+		}
+		return err
+	}
 	b.loadEmoji(ctx)
 	b.checkStorageChat(ctx)
 	b.log.Info("bot started")
 	b.api.Start(ctx)
 	b.log.Info("bot stopped")
+	return nil
 }

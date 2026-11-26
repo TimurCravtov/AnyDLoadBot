@@ -79,8 +79,7 @@ func run() error {
 		return err
 	}
 
-	b.Run(ctx)
-	return nil
+	return b.Run(ctx)
 }
 
 // newProviders builds the registry of supported sites. To support another site,
