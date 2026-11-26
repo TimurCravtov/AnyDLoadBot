@@ -15,8 +15,8 @@ FROM debian:12-slim
 # To upgrade, change BOTH:
 #   version:  https://github.com/yt-dlp/yt-dlp/releases
 #   checksum: the "yt-dlp_linux" line of that release's SHA2-256SUMS
-ARG YTDLP_VERSION=2026.10.26
-ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+ARG YTDLP_VERSION=2026.11.23
+ARG YTDLP_SHA256=249ddb058234276bc449b9cd9492aad9f133bda5923c61a9e39983ae114ef17d
 
 # yt-dlp needs a JavaScript runtime to solve YouTube's challenges; without one,
 # stream URLs often fail with "HTTP Error 403". Deno is the runtime yt-dlp uses
