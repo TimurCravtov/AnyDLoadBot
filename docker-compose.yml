@@ -30,8 +30,7 @@ services:
       # PO tokens for YouTube from the pot service below; without them YouTube
       # answers "Requested format is not available" even with cookies. Set to
       # an empty value to turn it off.
-      YTDLP_POT_URL: ${YTDLP_POT_URL-http://pot:4416}
-      # Optional cookies.txt paths inside the container (needs a volume added to
+      YTDLP_POT_URL: ${YTDLP_POT_URL-http://pot:4416}      # Optional cookies.txt paths inside the container (needs a volume added to
       # this file). Empty means "not used".
       YTDLP_COOKIES: ${YTDLP_COOKIES:-}
       INSTAGRAM_COOKIES: ${INSTAGRAM_COOKIES:-}

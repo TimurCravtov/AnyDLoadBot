@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tgbot "github.com/go-telegram/bot"
@@ -25,6 +26,9 @@ type Bot struct {
 	jobs          *jobs
 	username      string        // set once in Run, before polling starts
 	progressEvery time.Duration // how often progress is shown; tests shorten it
+
+	emoji    [numStatusKinds]customEmoji // custom status emoji; completed in Run (loadEmoji)
+	emojiOff atomic.Bool                 // set if Telegram refuses custom emoji for this bot
 }
 
 // Default concurrent-download limits.
@@ -40,6 +44,7 @@ type options struct {
 	storageChatID     int64
 	maxUser, maxTotal int
 	apiProxy          *url.URL
+	statusEmoji       *[numStatusKinds]string // nil: statusEmojiIDs
 	api               []tgbot.Option
 }
 
@@ -91,6 +96,13 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 		jobs:          newJobs(o.maxUser, o.maxTotal),
 		progressEvery: progressInterval,
 	}
+	ids := statusEmojiIDs
+	if o.statusEmoji != nil {
+		ids = *o.statusEmoji
+	}
+	for k, id := range ids {
+		b.emoji[k] = customEmoji{id: id, fallback: defaultEmoji[k]}
+	}
 
 	api, err := tgbot.New(token, append([]tgbot.Option{
 		tgbot.WithDefaultHandler(b.handleDefault),
@@ -122,6 +134,7 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 	api.RegisterHandlerMatchFunc(isCommand("start"), b.handleStart)
 	api.RegisterHandlerMatchFunc(isCommand("help"), b.handleHelp)
 	api.RegisterHandlerMatchFunc(isCommand("cancel"), b.handleCancel)
+	api.RegisterHandlerMatchFunc(isCommand("emoji"), b.handleEmoji)
 	api.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, cancelData, tgbot.MatchTypeExact, b.handleCancelButton)
 	api.RegisterHandlerMatchFunc(isInlineQuery, b.handleInline)
 	api.RegisterHandlerMatchFunc(isChosenInlineResult, b.handleChosenInline)
@@ -206,6 +219,7 @@ func (b *Bot) checkStorageChat(ctx context.Context) {
 // Run starts long polling and blocks until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) {
 	b.loadUsername(ctx)
+	b.loadEmoji(ctx)
 	b.checkStorageChat(ctx)
 	b.log.Info("bot started")
 	b.api.Start(ctx)

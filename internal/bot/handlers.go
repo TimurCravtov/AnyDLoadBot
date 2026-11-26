@@ -92,8 +92,8 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	// the status message is removed.
 	if status != 0 {
 		var stop func()
-		ctx, stop = b.startProgress(ctx, func(pctx context.Context, text string) {
-			b.editChatStatus(pctx, api, chatID, status, text)
+		ctx, stop = b.startProgress(ctx, func(pctx context.Context, kind statusKind, text string) {
+			b.editChatStatus(pctx, api, chatID, status, kind, text)
 		})
 		defer stop()
 	}

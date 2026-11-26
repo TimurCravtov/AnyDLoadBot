@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgbot "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 
 	"anydloadbot/internal/downloader"
 )
@@ -145,7 +146,7 @@ func formatDuration(d time.Duration) string {
 // It returns the context the download must use (progress is reported through
 // it) and a stop function. stop must be called, and must have returned, before
 // the status message is replaced or removed; calling it again is harmless.
-func (b *Bot) startProgress(ctx context.Context, edit func(ctx context.Context, text string)) (context.Context, func()) {
+func (b *Bot) startProgress(ctx context.Context, edit func(ctx context.Context, kind statusKind, text string)) (context.Context, func()) {
 	every := b.progressEvery
 	if every <= 0 {
 		every = progressInterval
@@ -172,7 +173,7 @@ func (b *Bot) startProgress(ctx context.Context, edit func(ctx context.Context, 
 				}
 				// Only edit when the text changes: Telegram rejects no-op edits.
 				if text := renderProgress(p, speed, elapsed); text != last {
-					edit(ctx, text)
+					edit(ctx, kindOf(p), text)
 					last = text
 				}
 			}
@@ -184,10 +185,15 @@ func (b *Bot) startProgress(ctx context.Context, edit func(ctx context.Context, 
 	return downloader.WithProgress(ctx, t.update), stop
 }
 
-// editChatStatus shows text in a chat status message, keeping its Cancel button.
-func (b *Bot) editChatStatus(ctx context.Context, api *tgbot.Bot, chatID int64, messageID int, text string) {
-	if _, err := api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-		ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: cancelKeyboard(),
+// editChatStatus shows text in a chat status message, keeping its Cancel
+// button, with kind's custom emoji if one is set.
+func (b *Bot) editChatStatus(ctx context.Context, api *tgbot.Bot, chatID int64, messageID int, kind statusKind, text string) {
+	text, entities := b.statusMessage(kind, text)
+	if err := b.withEmoji(entities, func(entities []models.MessageEntity) error {
+		_, err := api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+			ChatID: chatID, MessageID: messageID, Text: text, Entities: entities, ReplyMarkup: cancelKeyboard(),
+		})
+		return err
 	}); err != nil {
 		b.log.Debug("progress update", "err", err)
 	}

@@ -80,13 +80,21 @@ func (b *Bot) handleCancelButton(ctx context.Context, api *tgbot.Bot, u *models.
 // sendStatus shows "downloading" with a Cancel button as a reply to the user's
 // message and returns the status message's ID (0 if it couldn't be sent).
 func (b *Bot) sendStatus(ctx context.Context, api *tgbot.Bot, chatID int64, replyTo int) int {
-	msg, err := api.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:          chatID,
-		Text:            statusText,
-		ReplyMarkup:     cancelKeyboard(),
-		ReplyParameters: &models.ReplyParameters{MessageID: replyTo},
+	text, entities := b.statusMessage(statusPreparing, statusText)
+	var msg *models.Message
+	err := b.withEmoji(entities, func(entities []models.MessageEntity) error {
+		var err error
+		msg, err = api.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID:          chatID,
+			Text:            text,
+			Entities:        entities,
+			ReplyMarkup:     cancelKeyboard(),
+			ReplyParameters: &models.ReplyParameters{MessageID: replyTo},
+		})
+		return err
 	})
 	if err != nil || msg == nil {
+		b.log.Warn("send status message", "err", err)
 		return 0 // the download still works, it just can't be cancelled with a button
 	}
 	return msg.ID
@@ -100,7 +108,13 @@ func (b *Bot) endStatus(ctx context.Context, api *tgbot.Bot, chatID int64, messa
 
 	var err error
 	if cancelled {
-		_, err = api.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: cancelledText})
+		text, entities := b.statusMessage(statusCancelled, cancelledText)
+		err = b.withEmoji(entities, func(entities []models.MessageEntity) error {
+			_, err := api.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+				ChatID: chatID, MessageID: messageID, Text: text, Entities: entities,
+			})
+			return err
+		})
 	} else {
 		_, err = api.DeleteMessage(ctx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: messageID})
 	}

@@ -80,6 +80,9 @@ type fakeTelegram struct {
 	// rejectURLs makes sendVideo fail for URLs, like Telegram does when it
 	// can't fetch them.
 	rejectURLs bool
+	// rejectEmoji makes calls with custom emoji fail, like Telegram does for
+	// bots whose owner has no Premium.
+	rejectEmoji bool
 }
 
 type fakeCall struct {
@@ -109,12 +112,16 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	f.calls = append(f.calls, call)
-	reject := f.rejectURLs
+	reject, rejectEmoji := f.rejectURLs, f.rejectEmoji
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	if reject && strings.HasPrefix(call.fields["video"], "https://") {
 		fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: failed to get HTTP URL content"}`)
+		return
+	}
+	if rejectEmoji && strings.Contains(call.fields["entities"], "custom_emoji") {
+		fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: custom emoji entities can't be used"}`)
 		return
 	}
 	chat := fmt.Sprintf(`"message_id":1,"date":0,"chat":{"id":%d,"type":"private"}`, storageChat)
@@ -125,6 +132,8 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d,"date":0,"chat":{"id":5,"type":"private"},"text":"x"}}`, f.nextMessageID())
 	case "sendAudio":
 		fmt.Fprintf(w, `{"ok":true,"result":{%s,"audio":{"file_id":%q,"file_unique_id":"u","duration":1}}}`, chat, fakeFileID)
+	case "getCustomEmojiStickers": // knows one custom emoji
+		fmt.Fprintf(w, `{"ok":true,"result":[{"file_id":"f","file_unique_id":"u","type":"custom_emoji","width":100,"height":100,"is_animated":false,"is_video":false,"emoji":%q,"custom_emoji_id":%q}]}`, knownEmoji, knownEmojiID)
 	case "sendPhoto":
 		fmt.Fprintf(w, `{"ok":true,"result":{%s,"photo":[{"file_id":"small","file_unique_id":"s","width":1,"height":1},{"file_id":%q,"file_unique_id":"u","width":2,"height":2}]}}`, chat, fakeFileID)
 	default:

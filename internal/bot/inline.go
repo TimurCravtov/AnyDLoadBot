@@ -216,7 +216,8 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 	defer cancel()
 
 	// Live progress in the placeholder, stopped before it is replaced.
-	ctx, stopProgress := b.startProgress(ctx, func(pctx context.Context, text string) {
+	// Plain emoji: custom ones only work in messages the bot sends itself.
+	ctx, stopProgress := b.startProgress(ctx, func(pctx context.Context, _ statusKind, text string) {
 		b.editInlineProgress(pctx, api, c.InlineMessageID, link, text)
 	})
 	defer stopProgress()

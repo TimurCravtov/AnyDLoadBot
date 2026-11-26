@@ -214,7 +214,7 @@ func TestStartProgressStopIsIdempotentAndQuiet(t *testing.T) {
 	b.progressEvery = 5 * time.Millisecond
 	var mu sync.Mutex
 	var texts []string
-	ctx, stop := b.startProgress(context.Background(), func(_ context.Context, text string) {
+	ctx, stop := b.startProgress(context.Background(), func(_ context.Context, _ statusKind, text string) {
 		mu.Lock()
 		defer mu.Unlock()
 		texts = append(texts, text)
@@ -252,7 +252,7 @@ func TestStartProgressShowsPreparingBeforeAnyReport(t *testing.T) {
 	b.progressEvery = 10 * time.Millisecond
 	var mu sync.Mutex
 	var texts []string
-	_, stop := b.startProgress(context.Background(), func(_ context.Context, text string) {
+	_, stop := b.startProgress(context.Background(), func(_ context.Context, _ statusKind, text string) {
 		mu.Lock()
 		defer mu.Unlock()
 		texts = append(texts, text)
