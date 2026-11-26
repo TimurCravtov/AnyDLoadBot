@@ -336,6 +336,12 @@ func (c *Client) fetch(ctx context.Context, link string, req Request) (*File, er
 	return &File{Name: filepath.Base(file), Data: data}, nil
 }
 
+// FastYouTube are yt-dlp arguments that make YouTube lookups about a second
+// faster: yt-dlp asks YouTube as only one app (tv_samsung, which serves the
+// streams with cookies and a PO token) instead of several. YouTube changes
+// which apps work now and then, so callers retry without them on failure.
+var FastYouTube = []string{"--extractor-args", "youtube:player_client=tv_samsung"}
+
 // Direct is a single downloadable file, as yt-dlp resolved it.
 type Direct struct {
 	URL  string

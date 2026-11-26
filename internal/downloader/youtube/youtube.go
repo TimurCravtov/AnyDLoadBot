@@ -214,7 +214,12 @@ func (p *Provider) prepare(ctx context.Context, link string) (meta *ytdlp.Info, 
 		return nil, nil, err
 	}
 
-	meta, err = p.yt.Probe(ctx, link)
+	meta, err = p.yt.Probe(ctx, link, ytdlp.FastYouTube...)
+	// If the fast lookup didn't work out, the default one; not for videos that
+	// are simply unavailable (private, removed, ...).
+	if err != nil && ctx.Err() == nil && !errors.Is(err, downloader.ErrNoMedia) {
+		meta, err = p.yt.Probe(ctx, link)
+	}
 	if err != nil {
 		release()
 		return nil, nil, err

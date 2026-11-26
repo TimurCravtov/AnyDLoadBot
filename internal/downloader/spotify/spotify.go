@@ -150,7 +150,11 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	if t.Artist != "" {
 		query = t.Artist + " - " + t.Title
 	}
-	file, err := p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true})
+	file, err := p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true, Extra: ytdlp.FastYouTube})
+	if err != nil && ctx.Err() == nil && !errors.Is(err, downloader.ErrTooLarge) && !errors.Is(err, downloader.ErrNoMedia) {
+		// The fast YouTube lookup didn't work out: the default one.
+		file, err = p.yt.Fetch(ctx, "ytsearch1:"+query, ytdlp.Request{Audio: true})
+	}
 	if err != nil {
 		return nil, err
 	}
