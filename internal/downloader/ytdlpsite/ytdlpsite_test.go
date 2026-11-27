@@ -186,8 +186,8 @@ func TestDownloadLimits(t *testing.T) {
 		wantCalls int
 	}{
 		{"unknown duration is allowed", `{"title":"x"}`, nil, 1},
-		{"at the limit", `{"duration":900}`, nil, 1},
-		{"too long never starts the download", `{"duration":900.5}`, downloader.ErrTooLong, 1},
+		{"at the limit", `{"duration":3600}`, nil, 1},
+		{"too long never starts the download", `{"duration":3600.5}`, downloader.ErrTooLong, 1},
 		{"live stream", `{"is_live":true}`, downloader.ErrNoMedia, 1},
 	}
 	for _, tt := range tests {
@@ -308,7 +308,7 @@ func TestDownloadAudio(t *testing.T) {
 	}
 
 	// The same duration limit as for video applies.
-	long := &fakeRun{meta: `{"duration":901}`}
+	long := &fakeRun{meta: `{"duration":3601}`}
 	if _, err := newTestProvider(long, Options{}).DownloadAudio(context.Background(), link); !errors.Is(err, downloader.ErrTooLong) {
 		t.Errorf("err = %v, want ErrTooLong", err)
 	}

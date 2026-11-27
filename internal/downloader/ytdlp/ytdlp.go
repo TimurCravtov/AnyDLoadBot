@@ -50,6 +50,10 @@ type Client struct {
 	run      Runner
 	sem      chan struct{}
 	defaults []string // added to every run, before per-request arguments
+
+	// Set by KeepFiles: downloads stay on disk in dir, up to maxSize bytes.
+	dir     string
+	maxSize int64
 }
 
 // Options are settings that apply to every yt-dlp run.
@@ -115,6 +119,31 @@ func NewWithRunner(run Runner, concurrency int, defaults ...string) *Client {
 		concurrency = DefaultConcurrency
 	}
 	return &Client{run: run, sem: make(chan struct{}, concurrency), defaults: defaults}
+}
+
+// KeepFiles makes Fetch leave downloads on disk in dir (File.Path) instead of
+// reading them into memory, with maxSize as the size limit instead of
+// downloader.MaxSize; videos over it are compressed to fit. dir must be
+// readable by whoever sends the files on (a local Bot API server). Leftovers
+// of earlier runs in dir (from a crash, say) are removed.
+func (c *Client) KeepFiles(dir string, maxSize int64) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("media dir: %w", err)
+	}
+	old, _ := filepath.Glob(filepath.Join(dir, "ytdl-*"))
+	for _, d := range old {
+		_ = os.RemoveAll(d)
+	}
+	c.dir, c.maxSize = dir, maxSize
+	return nil
+}
+
+// MaxSize is the largest file Fetch returns.
+func (c *Client) MaxSize() int64 {
+	if c.dir != "" {
+		return c.maxSize
+	}
+	return downloader.MaxSize
 }
 
 // exec runs yt-dlp with the client's default arguments followed by args. Any
@@ -279,25 +308,76 @@ type Request struct {
 // File is a downloaded file and the metadata yt-dlp found for it.
 type File struct {
 	Name string
-	Data []byte
+	Data []byte // the file, unless it was kept on disk (KeepFiles)
+	Path string // the file on disk, if it was kept there; see Remove
 	Info Info
+
+	dir string // Path's temporary directory
+}
+
+// Remove deletes a file kept on disk. It is safe to call more than once.
+func (f *File) Remove() {
+	if f.dir != "" {
+		_ = os.RemoveAll(f.dir)
+	}
+}
+
+// Media is the file as a downloader.Media of kind. A file on disk is removed
+// when the Media is closed.
+func (f *File) Media(kind downloader.Kind) *downloader.Media {
+	m := &downloader.Media{Kind: kind, Filename: f.Name, Data: f.Data, Path: f.Path}
+	if f.Path != "" {
+		m.Cleanup = f.Remove
+	}
+	return m
+}
+
+// Format size placeholders, replaced in Request.Format by sizes derived from
+// the client's size limit: the largest video stream (leaving room for the
+// audio) and the largest single file (leaving room for container overhead).
+// With the in-memory limit of 50 MB they are 40M and 48M.
+const (
+	VideoSize = "{video-size}"
+	FileSize  = "{file-size}"
+)
+
+func (c *Client) formatSizes(format string) string {
+	mb := func(frac float64) string {
+		return strconv.Itoa(int(float64(c.MaxSize())*frac)>>20) + "M"
+	}
+	return strings.NewReplacer(VideoSize, mb(0.8), FileSize, mb(0.96)).Replace(format)
 }
 
 // metaPrefix marks the metadata line Fetch has yt-dlp print.
 const metaPrefix = "anydl-meta:"
 
-// Fetch downloads link into memory, in a single yt-dlp run. It returns
-// downloader.ErrTooLarge if no format fits in downloader.MaxSize.
-func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, error) {
-	dir, err := os.MkdirTemp("", "ytdl-*")
+// compressFactor is how much bigger than the size limit a video may be
+// downloaded, to be compressed to fit afterwards.
+const compressFactor = 4
+
+// Fetch downloads link in a single yt-dlp run, into memory or, with
+// KeepFiles, to disk. It returns downloader.ErrTooLarge if the file doesn't
+// fit in MaxSize (a video kept on disk is compressed to fit first).
+func (c *Client) Fetch(ctx context.Context, link string, req Request) (_ *File, err error) {
+	dir, err := os.MkdirTemp(c.dir, "ytdl-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	keep := c.dir != ""
+	defer func() {
+		if !keep || err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	limit := c.MaxSize()
+	maxDownload := limit
+	if keep && !req.Audio {
+		maxDownload = limit * compressFactor
+	}
 
 	args := []string{
 		"--no-playlist", "--no-warnings", "--no-mtime", "--restrict-filenames",
-		"--max-filesize", "50M",
+		"--max-filesize", strconv.FormatInt(maxDownload>>20, 10) + "M",
 	}
 	args = append(args, progressArgs...)
 	if req.Audio {
@@ -305,7 +385,7 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 			"-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "192K",
 			"--embed-metadata", "--embed-thumbnail", "--convert-thumbnails", "jpg")
 	} else {
-		args = append(args, "-f", req.Format, "-S", req.Sort, "--merge-output-format", "mp4")
+		args = append(args, "-f", c.formatSizes(req.Format), "-S", req.Sort, "--merge-output-format", "mp4")
 	}
 	if req.MaxDuration > 0 {
 		limit := int(req.MaxDuration.Seconds())
@@ -365,8 +445,24 @@ func (c *Client) Fetch(ctx context.Context, link string, req Request) (*File, er
 	if err != nil {
 		return nil, fmt.Errorf("stat downloaded file: %w", err)
 	}
-	if info.Size() > downloader.MaxSize {
-		return nil, downloader.ErrTooLarge
+	if info.Size() > limit {
+		if !keep || req.Audio {
+			return nil, downloader.ErrTooLarge
+		}
+		downloader.Report(ctx, downloader.Progress{Stage: downloader.StageProcessing})
+		if file, err = compress(ctx, file, meta.Duration, limit); err != nil {
+			return nil, err
+		}
+	}
+	if keep {
+		// The local Bot API server runs as another user: let it read the file.
+		if err := os.Chmod(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("media dir permissions: %w", err)
+		}
+		if err := os.Chmod(file, 0o644); err != nil {
+			return nil, fmt.Errorf("media file permissions: %w", err)
+		}
+		return &File{Name: filepath.Base(file), Path: file, Info: meta, dir: dir}, nil
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {

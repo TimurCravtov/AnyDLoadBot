@@ -36,6 +36,11 @@ services:
       # Set TELEGRAM_API_URL to an empty value to use api.telegram.org again
       # (possible 10 minutes after the log-out).
       TELEGRAM_API_URL: ${TELEGRAM_API_URL-http://telegram-bot-api:8081}
+      # Downloads stay in this folder, which the Bot API server mounts at the
+      # same path and reads itself: no upload from the bot, and files up to
+      # 300 MB instead of 50 MB (bigger videos are compressed to fit). Set to
+      # an empty value to upload from memory again, with the 50 MB limit.
+      MEDIA_DIR: ${MEDIA_DIR-/media}
       # Only used without the local server: api.telegram.org through WARP, since
       # from some servers it answers every getUpdates with "502 Bad Gateway".
       # "bot logout-cloud" uses it too.
@@ -58,6 +63,7 @@ services:
       # yt-dlp's cache (YouTube's player code, solved challenges), so the first
       # downloads after a redeploy aren't slower.
       - ytdlp-cache:/home/bot/.cache
+      - media:/media
     depends_on:
       warp:
         condition: service_healthy
@@ -81,10 +87,13 @@ services:
     # Coolify hands every service all of the app's variables (overriding values
     # set here), and this image turns TELEGRAM_PROXY, meant for the bot, into its
     # webhook --proxy option, with which it fails to start. So drop it before
-    # the image's own entrypoint runs.
-    entrypoint: ["/bin/sh", "-c", "unset TELEGRAM_PROXY; exec /docker-entrypoint.sh"]
+    # the image's own entrypoint runs. The chmod lets the bot (another user)
+    # write to the shared media folder.
+    entrypoint: ["/bin/sh", "-c", "unset TELEGRAM_PROXY; chmod 1777 /media; exec /docker-entrypoint.sh"]
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+      # The bot's downloads (MEDIA_DIR), at the same path as in the bot.
+      - media:/media
 
   # Generates YouTube PO tokens for yt-dlp's bgutil plugin. yt-dlp tells it to
   # use its own proxy (WARP), so the tokens match the address YouTube sees.
@@ -115,5 +124,6 @@ services:
 
 volumes:
   ytdlp-cache:
+  media:
   warp-data:
   telegram-bot-api-data:

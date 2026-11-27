@@ -47,10 +47,8 @@ func (a *audioProvider) DownloadAudio(ctx context.Context, link string) (*downlo
 	if err != nil {
 		return nil, err
 	}
-	return &downloader.Media{
-		Kind:     downloader.KindAudio,
-		Filename: strings.TrimSuffix(file.Name, ".mp3") + ".mp3",
-		Data:     file.Data,
-		Title:    "Pinterest audio",
-	}, nil
+	m := file.Media(downloader.KindAudio)
+	m.Filename = strings.TrimSuffix(file.Name, ".mp3") + ".mp3"
+	m.Title = "Pinterest audio"
+	return m, nil
 }

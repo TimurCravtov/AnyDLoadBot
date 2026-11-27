@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -15,12 +16,13 @@ import (
 
 const (
 	noMediaText    = "I couldn't find any downloadable media at that link."
-	tooLargeText   = "That file is too large for Telegram bots (50 MB limit)."
+	tooLargeText   = "That file is too large to send (over %d MB)."
 	tooLongText    = "That video is too long for me to download."
 	downloadFailed = "Sorry, I couldn't download that. Please try again later."
 
-	// Long videos need yt-dlp to download and merge streams, which takes a while.
-	downloadTimeout = 5 * time.Minute
+	// Long videos need yt-dlp to download and merge streams, which takes a
+	// while, and files too big for the size limit are compressed first.
+	downloadTimeout = 20 * time.Minute
 	maxCaptionRunes = 200
 )
 
@@ -144,7 +146,7 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 			log.Info("download cancelled by the user")
 			return
 		}
-		text, unexpected := failureText(err)
+		text, unexpected := b.failureText(err)
 		if unexpected {
 			log.Error("download failed", append([]any{"err", err, "took", took()}, timer.LogAttrs()...)...)
 		} else {
@@ -154,6 +156,7 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 		return
 	}
 
+	defer media.Close()
 	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
 	f, err := b.deliver(withUpload(ctx), api, chatID, u.Message.ID, fromMedia(media))
 	if err != nil {
@@ -168,7 +171,7 @@ func (b *Bot) handleDefault(ctx context.Context, api *tgbot.Bot, u *models.Updat
 	if f.fileID != "" {
 		b.files.put(key, f)
 	}
-	log.Info("media sent", append([]any{"kind", media.Kind, "via", "upload", "bytes", len(media.Data), "took", took()},
+	log.Info("media sent", append([]any{"kind", media.Kind, "via", "upload", "bytes", media.Size(), "took", took()},
 		timer.LogAttrs()...)...)
 }
 
@@ -189,14 +192,22 @@ func (b *Bot) audioSites() string {
 	}), ", ")
 }
 
+// fileLimit is the size limit users are told about.
+func (b *Bot) fileLimit() int64 {
+	if b.maxFileSize > 0 {
+		return b.maxFileSize
+	}
+	return downloader.MaxSize
+}
+
 // failureText maps a download error to a user-facing message. unexpected is
 // true for errors worth logging (anything but "the video can't be fetched").
-func failureText(err error) (text string, unexpected bool) {
+func (b *Bot) failureText(err error) (text string, unexpected bool) {
 	switch {
 	case errors.Is(err, downloader.ErrNoMedia):
 		return noMediaText, false
 	case errors.Is(err, downloader.ErrTooLarge):
-		return tooLargeText, false
+		return fmt.Sprintf(tooLargeText, b.fileLimit()>>20), false
 	case errors.Is(err, downloader.ErrTooLong):
 		return tooLongText, false
 	default:

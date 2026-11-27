@@ -41,16 +41,27 @@ func newAPIClient(proxy *url.URL) *http.Client {
 		t.Proxy = http.ProxyURL(proxy)
 	}
 	t.ResponseHeaderTimeout = apiPollTimeout + 30*time.Second // getUpdates holds the response for up to apiPollTimeout
-	return &http.Client{Transport: uploadProgressTransport{base: t}}
+	// A local Bot API server answers a file send only after it has passed the
+	// file on to Telegram, which takes minutes for a few hundred MB.
+	upload := t.Clone()
+	upload.ResponseHeaderTimeout = uploadResponseTimeout
+	return &http.Client{Transport: uploadProgressTransport{base: t, upload: upload}}
 }
 
-// uploadProgressTransport reports upload progress for requests marked withUpload.
-type uploadProgressTransport struct{ base http.RoundTripper }
+// uploadResponseTimeout is how long a file send may take to be answered.
+const uploadResponseTimeout = 15 * time.Minute
+
+// uploadProgressTransport reports upload progress for requests marked
+// withUpload, and sends them with the longer uploadResponseTimeout.
+type uploadProgressTransport struct{ base, upload http.RoundTripper }
 
 func (t uploadProgressTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	marked, _ := req.Context().Value(uploadKey{}).(bool)
-	if !marked || req.Body == nil || req.Body == http.NoBody || req.ContentLength <= 0 {
+	if !marked {
 		return t.base.RoundTrip(req)
+	}
+	if req.Body == nil || req.Body == http.NoBody || req.ContentLength <= 0 {
+		return t.upload.RoundTrip(req)
 	}
 
 	// A RoundTripper must not change the request it is given, so send a copy.
@@ -65,7 +76,7 @@ func (t uploadProgressTransport) RoundTrip(req *http.Request) (*http.Response, e
 			return &countingBody{ctx: req.Context(), rc: body, total: req.ContentLength}, nil
 		}
 	}
-	return t.base.RoundTrip(out)
+	return t.upload.RoundTrip(out)
 }
 
 // countingBody reports how much of a request body has been sent.

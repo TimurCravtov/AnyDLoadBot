@@ -74,7 +74,9 @@ func run() error {
 		log.Info("Telegram API requests go through a proxy", "proxy", proxy.Host) // host only: no credentials
 	}
 
-	b, err := bot.New(cfg.Token, newProviders(cfg, log), log, botOpts...)
+	providers, maxFileSize := newProviders(cfg, log)
+	botOpts = append(botOpts, bot.WithMaxFileSize(maxFileSize))
+	b, err := bot.New(cfg.Token, providers, log, botOpts...)
 	if err != nil {
 		return err
 	}
@@ -82,9 +84,11 @@ func run() error {
 	return b.Run(ctx)
 }
 
-// newProviders builds the registry of supported sites. To support another site,
-// implement downloader.Provider and add it here.
-func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
+// newProviders builds the registry of supported sites, and says how big a file
+// they may return. To support another site, implement downloader.Provider and
+// add it here.
+func newProviders(cfg config.Config, log *slog.Logger) (*downloader.Registry, int64) {
+	maxFileSize := int64(downloader.MaxSize)
 	// Must happen before any provider (and so any Fetcher) is created.
 	if cfg.FetchProxy != "" {
 		if err := downloader.SetProxy(cfg.FetchProxy); err != nil {
@@ -99,6 +103,23 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 	yt, err := ytdlp.New(cfg.YtDlpPath, ytdlp.DefaultConcurrency, ytdlp.Options{
 		Cookies: cfg.YtDlpCookies, Proxy: cfg.YtDlpProxy, POTServer: cfg.YtDlpPOTServer, Server: cfg.YtDlpServer,
 	})
+
+	// With a local Bot API server sharing MEDIA_DIR, yt-dlp's downloads stay on
+	// disk and the server reads them itself, so they can be much bigger.
+	switch {
+	case err != nil:
+	case cfg.MediaDir == "":
+	case cfg.TelegramAPIURL == "":
+		log.Info("MEDIA_DIR is only used with a local Bot API server (TELEGRAM_API_URL)")
+	default:
+		if kerr := yt.KeepFiles(cfg.MediaDir, downloader.MaxLocalSize); kerr != nil {
+			log.Error("MEDIA_DIR not usable, files stay limited to 50 MB", "err", kerr)
+		} else {
+			maxFileSize = downloader.MaxLocalSize
+			log.Info("downloads are sent from disk through the local Bot API server",
+				"dir", cfg.MediaDir, "max_mb", maxFileSize>>20)
+		}
+	}
 
 	// YouTube (and Spotify, which is fetched from YouTube) can use its own proxy
 	// setting: with cookies and a PO token it often works without WARP, which
@@ -141,7 +162,7 @@ func newProviders(cfg config.Config, log *slog.Logger) *downloader.Registry {
 		}
 	}
 
-	return downloader.NewRegistry(providers...)
+	return downloader.NewRegistry(providers...), maxFileSize
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

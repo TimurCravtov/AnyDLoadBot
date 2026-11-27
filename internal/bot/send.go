@@ -23,8 +23,14 @@ type outgoing struct {
 }
 
 func fromMedia(m *downloader.Media) outgoing {
+	var file models.InputFile = &models.InputFileUpload{Filename: m.Filename, Data: bytes.NewReader(m.Data)}
+	if m.Path != "" {
+		// A local Bot API server reads the file itself (both containers mount
+		// the media volume at the same path): nothing is uploaded from here.
+		file = &models.InputFileString{Data: "file://" + m.Path}
+	}
 	return outgoing{
-		kind: m.Kind, file: &models.InputFileUpload{Filename: m.Filename, Data: bytes.NewReader(m.Data)},
+		kind: m.Kind, file: file,
 		title: m.Title, performer: m.Performer, duration: m.Duration,
 	}
 }

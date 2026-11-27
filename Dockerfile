@@ -56,9 +56,10 @@ COPY --from=build /out/bot /usr/local/bin/bot
 COPY deploy/ytdlp-server/server.py /opt/ytdlp-server/server.py
 # ~/.cache holds yt-dlp's cache (YouTube's player code, solved challenges);
 # docker-compose.yml keeps it in a volume, so redeploys don't start cold.
+# /media is where downloads wait for the local Bot API server (MEDIA_DIR).
 RUN useradd --system --create-home bot \
-    && mkdir -p /home/bot/.cache \
-    && chown bot:bot /home/bot/.cache
+    && mkdir -p /home/bot/.cache /media \
+    && chown bot:bot /home/bot/.cache /media
 USER bot
 
 # Non-secret defaults. Everything else (BOT_TOKEN, STORAGE_CHAT_ID, ...) is

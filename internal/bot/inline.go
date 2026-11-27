@@ -231,7 +231,7 @@ func (b *Bot) handleChosenInline(ctx context.Context, api *tgbot.Bot, u *models.
 			b.editStatus(parent, api, c.InlineMessageID, cancelledText)
 			return
 		}
-		text, unexpected := failureText(err)
+		text, unexpected := b.failureText(err)
 		if unexpected {
 			log.Error("inline download failed", append([]any{"err", err, "took", time.Since(start).Round(time.Millisecond)}, timer.LogAttrs()...)...)
 		} else {
@@ -279,6 +279,7 @@ func (b *Bot) storedMedia(ctx context.Context, api *tgbot.Bot, provider download
 	if err != nil {
 		return cachedFile{}, err
 	}
+	defer media.Close()
 	downloader.Report(ctx, downloader.Progress{Stage: downloader.StageUploading})
 	f, err := b.deliver(withUpload(ctx), api, b.storageChatID, 0, fromMedia(media))
 	if err != nil {

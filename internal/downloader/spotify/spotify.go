@@ -164,14 +164,11 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	if err != nil {
 		return nil, err
 	}
-	return &downloader.Media{
-		Kind:      downloader.KindAudio,
-		Filename:  file.Name,
-		Data:      file.Data,
-		Title:     t.Title,
-		Performer: t.Artist,
-		Duration:  t.Duration / 1000,
-	}, nil
+	m := file.Media(downloader.KindAudio)
+	m.Title = t.Title
+	m.Performer = t.Artist
+	m.Duration = t.Duration / 1000
+	return m, nil
 }
 
 type track struct {

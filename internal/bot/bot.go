@@ -28,6 +28,7 @@ type Bot struct {
 	storageChatID int64
 	files         *fileCache
 	jobs          *jobs
+	maxFileSize   int64         // the size limit users are told about
 	username      string        // set once in Run, before polling starts
 	progressEvery time.Duration // how often progress is shown; tests shorten it
 	apiRetry      time.Duration // first waitForAPI retry delay; tests shorten it
@@ -48,6 +49,7 @@ type Option func(*options)
 type options struct {
 	storageChatID     int64
 	maxUser, maxTotal int
+	maxFileSize       int64
 	apiProxy          *url.URL
 	statusEmoji       *[numStatusKinds]string // nil: statusEmojiIDs
 	api               []tgbot.Option
@@ -57,6 +59,13 @@ type options struct {
 // whole bot. Values <= 0 keep the defaults.
 func WithLimits(perUser, total int) Option {
 	return func(o *options) { o.maxUser, o.maxTotal = perUser, total }
+}
+
+// WithMaxFileSize sets the size limit shown in /help and in "too large"
+// replies (default downloader.MaxSize). It doesn't enforce anything: the
+// providers do.
+func WithMaxFileSize(n int64) Option {
+	return func(o *options) { o.maxFileSize = n }
 }
 
 // WithStorageChat sets the private chat the bot uploads downloaded videos to.
@@ -137,11 +146,15 @@ func New(token string, providers *downloader.Registry, log *slog.Logger, opts ..
 	if o.maxTotal <= 0 {
 		o.maxTotal = DefaultTotalLimit
 	}
+	if o.maxFileSize <= 0 {
+		o.maxFileSize = downloader.MaxSize
+	}
 
 	b := &Bot{
 		log:           log,
 		providers:     providers,
 		storageChatID: o.storageChatID,
+		maxFileSize:   o.maxFileSize,
 		files:         newFileCache(maxCachedFiles),
 		jobs:          newJobs(o.maxUser, o.maxTotal),
 		progressEvery: progressInterval,

@@ -167,7 +167,7 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	file, err := p.yt.Fetch(ctx, link, req)
 	switch {
 	case err == nil:
-		return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data}, nil
+		return file.Media(downloader.KindVideo), nil
 	case noVideoRe.MatchString(err.Error()):
 		return p.image(ctx, id)
 	default:
@@ -249,14 +249,11 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 		}
 		return nil, err
 	}
-	return &downloader.Media{
-		Kind:      downloader.KindAudio,
-		Filename:  file.Name,
-		Data:      file.Data,
-		Title:     file.Info.Title,
-		Performer: file.Info.Uploader,
-		Duration:  int(file.Info.Duration),
-	}, nil
+	m := file.Media(downloader.KindAudio)
+	m.Title = file.Info.Title
+	m.Performer = file.Info.Uploader
+	m.Duration = int(file.Info.Duration)
+	return m, nil
 }
 
 // image downloads the post's picture (the first one, for carousels).

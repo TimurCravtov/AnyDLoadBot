@@ -61,6 +61,10 @@ func TestLoad(t *testing.T) {
 			TelegramAPIURL: "http://telegram-bot-api:8081",
 		}},
 		{name: "bad bot api server", env: map[string]string{"BOT_TOKEN": "t", "TELEGRAM_API_URL": "telegram-bot-api:8081"}, wantErr: true},
+		{name: "media dir", env: map[string]string{"BOT_TOKEN": "t", "MEDIA_DIR": " /media "}, want: Config{
+			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, MediaDir: "/media",
+		}},
+		{name: "relative media dir", env: map[string]string{"BOT_TOKEN": "t", "MEDIA_DIR": "media"}, wantErr: true},
 		{name: "youtube direct", env: map[string]string{"BOT_TOKEN": "t", "YOUTUBE_PROXY": "direct"}, want: Config{
 			Token: "t", LogLevel: slog.LevelInfo, YtDlpPath: "yt-dlp", MaxUserDownloads: 5, MaxTotalDownloads: 100, YouTubeProxy: "direct",
 		}},

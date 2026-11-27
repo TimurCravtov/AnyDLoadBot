@@ -18,11 +18,11 @@ import (
 
 const (
 	// DefaultMaxDuration is the longest video the provider will download.
-	DefaultMaxDuration = 15 * time.Minute
+	DefaultMaxDuration = time.Hour
 
 	// Prefer the best streams that fit; fall back to whatever yt-dlp thinks is
 	// best (its --max-filesize is the hard stop when sizes aren't known up front).
-	formatSelector = "bv*[filesize<40M]+ba/b[filesize<48M]/bv*+ba/b"
+	formatSelector = "bv*[filesize<" + ytdlp.VideoSize + "]+ba/b[filesize<" + ytdlp.FileSize + "]/bv*+ba/b"
 	// h264 plays everywhere in Telegram; newer codecs may not.
 	formatSort = "res:720,vcodec:h264,ext:mp4:m4a"
 )
@@ -259,7 +259,9 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 		return nil, err
 	}
 	// The title is the caption in chat; inline messages are sent without one.
-	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: file.Info.Title}, nil
+	m := file.Media(downloader.KindVideo)
+	m.Title = file.Info.Title
+	return m, nil
 }
 
 // DownloadAudio implements downloader.AudioDownloader: the video's sound as an
@@ -269,14 +271,11 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 	if err != nil {
 		return nil, err
 	}
-	return &downloader.Media{
-		Kind:      downloader.KindAudio,
-		Filename:  file.Name,
-		Data:      file.Data,
-		Title:     truncate(strings.TrimSpace(file.Info.Title), maxPreviewTitle),
-		Performer: file.Info.Uploader,
-		Duration:  int(file.Info.Duration),
-	}, nil
+	m := file.Media(downloader.KindAudio)
+	m.Title = truncate(strings.TrimSpace(file.Info.Title), maxPreviewTitle)
+	m.Performer = file.Info.Uploader
+	m.Duration = int(file.Info.Duration)
+	return m, nil
 }
 
 // fetch1 validates the link and downloads it in one yt-dlp run, which also

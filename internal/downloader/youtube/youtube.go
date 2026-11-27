@@ -19,17 +19,19 @@ import (
 
 const (
 	// DefaultMaxDuration is the longest video the provider will download.
-	DefaultMaxDuration = 15 * time.Minute
+	DefaultMaxDuration = time.Hour
 
 	oembedURL     = "https://www.youtube.com/oembed"
 	oembedTimeout = 3 * time.Second
 	maxOEmbedSize = 64 << 10
 
-	// Size limits sit below downloader.MaxSize to leave room for container overhead.
-	// Prefer the best streams that fit; fall back to the smallest ones. yt-dlp's
+	// Prefer the best streams that fit the size limit (the yt-dlp client fills
+	// in the sizes); fall back to the smallest ones, which a client keeping
+	// files on disk compresses if they're still too big. yt-dlp's
 	// --max-filesize is the hard stop when sizes are unknown up front.
-	formatSelector = "bv*[filesize<40M]+ba/b[filesize<48M]/bv*[filesize_approx<40M]+ba/b[filesize_approx<48M]/wv*+wa/w"
-	formatSort     = "res:720,ext:mp4:m4a"
+	formatSelector = "bv*[filesize<" + ytdlp.VideoSize + "]+ba/b[filesize<" + ytdlp.FileSize + "]/" +
+		"bv*[filesize_approx<" + ytdlp.VideoSize + "]+ba/b[filesize_approx<" + ytdlp.FileSize + "]/wv*+wa/w"
+	formatSort = "res:720,ext:mp4:m4a"
 )
 
 var (
@@ -176,7 +178,9 @@ func (p *Provider) Download(ctx context.Context, link string) (*downloader.Media
 	if err != nil {
 		return nil, err
 	}
-	return &downloader.Media{Kind: downloader.KindVideo, Filename: file.Name, Data: file.Data, Title: file.Info.Title}, nil
+	m := file.Media(downloader.KindVideo)
+	m.Title = file.Info.Title
+	return m, nil
 }
 
 // DownloadAudio implements downloader.AudioDownloader. The MP3 has the title,
@@ -186,14 +190,11 @@ func (p *Provider) DownloadAudio(ctx context.Context, link string) (*downloader.
 	if err != nil {
 		return nil, err
 	}
-	return &downloader.Media{
-		Kind:      downloader.KindAudio,
-		Filename:  file.Name,
-		Data:      file.Data,
-		Title:     file.Info.Title,
-		Performer: file.Info.Uploader,
-		Duration:  int(file.Info.Duration),
-	}, nil
+	m := file.Media(downloader.KindAudio)
+	m.Title = file.Info.Title
+	m.Performer = file.Info.Uploader
+	m.Duration = int(file.Info.Duration)
+	return m, nil
 }
 
 // fetch1 validates the link and downloads it in one yt-dlp run, which also

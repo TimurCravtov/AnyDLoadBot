@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,12 @@ type Config struct {
 	// uploads to Telegram itself; TelegramProxy is not used. "" means
 	// Telegram's public server, api.telegram.org.
 	TelegramAPIURL string
+	// MediaDir is a directory shared with the local Bot API server (mounted at
+	// the same path in both containers). With it, downloads stay on disk there
+	// and are sent by path, which allows files up to downloader.MaxLocalSize.
+	// Only used together with TelegramAPIURL. "" means files are uploaded from
+	// memory, up to downloader.MaxSize.
+	MediaDir string
 	// YtDlpPOTServer is an optional bgutil PO token server URL for YouTube
 	// (see ytdlp.Options.POTServer).
 	YtDlpPOTServer string
@@ -167,6 +174,10 @@ func load(getenv func(string) string) (Config, error) {
 	}
 	if f := strings.Fields(getenv("YTDLP_SERVER")); len(f) > 0 {
 		cfg.YtDlpServer = f
+	}
+	cfg.MediaDir = strings.TrimSpace(getenv("MEDIA_DIR"))
+	if cfg.MediaDir != "" && !path.IsAbs(cfg.MediaDir) {
+		errs = append(errs, fmt.Errorf("MEDIA_DIR must be an absolute path, got %q", cfg.MediaDir))
 	}
 	if v := strings.TrimSpace(getenv("YTDLP_PATH")); v != "" {
 		cfg.YtDlpPath = v

@@ -6,11 +6,17 @@ package downloader
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 )
 
-// MaxSize is the largest file the Telegram Bot API lets a bot upload.
+// MaxSize is the largest file the Telegram Bot API lets a bot upload, and the
+// limit for files held in memory.
 const MaxSize = 50 << 20
+
+// MaxLocalSize is the size limit for files kept on disk (Media.Path) and handed
+// to a local Bot API server, which accepts far bigger files than MaxSize.
+const MaxLocalSize = 300 << 20
 
 var (
 	// ErrNoMedia means the link has no downloadable media (e.g. an image-only pin).
@@ -37,11 +43,38 @@ type Media struct {
 	Kind     Kind
 	Filename string
 	Data     []byte
-	Title    string // optional; the caption (video/photo) or track title (audio)
+	// Path, if set instead of Data, is the file on disk, in a directory a local
+	// Bot API server can read. Whoever receives the Media must call Close.
+	Path  string
+	Title string // optional; the caption (video/photo) or track title (audio)
 
 	// Audio only.
 	Performer string
 	Duration  int // seconds
+
+	// Cleanup, if set, removes the file at Path. Close calls it.
+	Cleanup func()
+}
+
+// Close releases the media's file on disk, if it has one. It is safe to call
+// on a nil Media and more than once.
+func (m *Media) Close() {
+	if m == nil || m.Cleanup == nil {
+		return
+	}
+	m.Cleanup()
+	m.Cleanup = nil
+}
+
+// Size is the file's size in bytes.
+func (m *Media) Size() int64 {
+	if m.Path != "" {
+		if info, err := os.Stat(m.Path); err == nil {
+			return info.Size()
+		}
+		return 0
+	}
+	return int64(len(m.Data))
 }
 
 // Describer is implemented by providers that tell users what they support, for
