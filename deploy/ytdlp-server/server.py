@@ -21,6 +21,7 @@ import selectors
 import signal
 import socket
 import sys
+import time
 import traceback
 
 
@@ -50,7 +51,46 @@ def preload():
             __import__(name)
         except Exception:
             pass
+    enable_player_cache()
     return yt_dlp
+
+
+# Preprocessed players older than this are deleted at start-up. YouTube ships a
+# new player every few days, and yt-dlp never removes the old ones itself.
+PLAYER_CACHE_MAX_AGE = 14 * 24 * 3600
+
+
+def enable_player_cache():
+    """Let yt-dlp cache YouTube's preprocessed player between runs.
+
+    Solving YouTube's challenges starts with Deno parsing and rewriting the
+    whole player (several MB of JavaScript); that took most of a ~3 s solve
+    on the server, for every video. yt-dlp can store the rewritten player and
+    hand it straight to the solver next time, but ships with that turned off
+    ("files are large and we do not support rotation"). Here the cache lives
+    in a volume, and old players are pruned below, so turn it on.
+    """
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+    except Exception:  # moved in another yt-dlp version: just stay uncached
+        return
+    if not hasattr(EJSBaseJCP, "_ENABLE_PREPROCESSED_PLAYER_CACHE"):
+        return
+    EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
+
+    cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    section = os.path.join(cache_home, "yt-dlp", getattr(EJSBaseJCP, "_CACHE_SECTION", "challenge-solver"))
+    try:
+        entries = list(os.scandir(section))
+    except OSError:
+        return
+    now = time.time()
+    for entry in entries:
+        try:
+            if entry.name.startswith("player") and now - entry.stat().st_mtime > PLAYER_CACHE_MAX_AGE:
+                os.unlink(entry.path)
+        except OSError:
+            pass
 
 
 def run_child(yt_dlp, args, out_fd, err_fd):

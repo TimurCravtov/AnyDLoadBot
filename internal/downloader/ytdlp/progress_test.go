@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"anydloadbot/internal/downloader"
@@ -24,6 +25,7 @@ func TestScanOutput(t *testing.T) {
 
 	// Mixed \n and bare \r line endings, as yt-dlp may print them.
 	out := "[youtube] abc: Downloading webpage\n" +
+		processPrefix + "started\n" + // the metadata print after the lookup: not processing yet
 		progressPrefix + "1024:4096:NA\r" +
 		progressPrefix + "2048:NA:8192.5\n" + // total unknown: the estimate is used
 		progressPrefix + "NA:NA:NA\n" + // nothing known yet
@@ -31,7 +33,7 @@ func TestScanOutput(t *testing.T) {
 		"/tmp/ytdl-1/abc.mp4\n"
 
 	var keep bytes.Buffer
-	scanOutput(ctx, strings.NewReader(out), &keep)
+	scanOutput(ctx, strings.NewReader(out), &keep, new(atomic.Bool))
 
 	want := []downloader.Progress{
 		{Stage: downloader.StageDownloading, Done: 1024, Total: 4096},
@@ -55,7 +57,7 @@ func TestScanOutputLongLine(t *testing.T) {
 	// --dump-single-json prints the whole metadata as one long line.
 	long := `{"id":"x","title":"` + strings.Repeat("a", 1<<20) + `"}`
 	var keep bytes.Buffer
-	scanOutput(context.Background(), strings.NewReader(long+"\n"), &keep)
+	scanOutput(context.Background(), strings.NewReader(long+"\n"), &keep, new(atomic.Bool))
 	if strings.TrimSpace(keep.String()) != long {
 		t.Errorf("long line was cut: kept %d bytes, want %d", len(strings.TrimSpace(keep.String())), len(long))
 	}

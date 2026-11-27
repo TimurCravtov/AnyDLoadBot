@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"anydloadbot/internal/downloader"
@@ -196,10 +197,11 @@ func execRunner(bin string) Runner {
 // progress depends on its quiet mode, so it checks both.)
 func drain(ctx context.Context, outPipe, errPipe io.Reader) (stdout, stderr *bytes.Buffer) {
 	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	var downloading atomic.Bool // shared: progress may come on either stream
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); scanOutput(ctx, outPipe, stdout) }()
-	go func() { defer wg.Done(); scanOutput(ctx, errPipe, stderr) }()
+	go func() { defer wg.Done(); scanOutput(ctx, outPipe, stdout, &downloading) }()
+	go func() { defer wg.Done(); scanOutput(ctx, errPipe, stderr, &downloading) }()
 	wg.Wait()
 	return stdout, stderr
 }
@@ -450,7 +452,12 @@ var progressArgs = []string{
 
 // scanOutput reads yt-dlp's output line by line: progress lines become
 // progress reports, everything else is kept in keep. Lines may end in \n or \r.
-func scanOutput(ctx context.Context, r io.Reader, keep *bytes.Buffer) {
+//
+// Post-processing is only reported once the download has begun: yt-dlp also
+// reports the metadata print that runs right after the lookup (Fetch's
+// "pre_process" --print) as post-processing, and the lookup must keep showing
+// as "preparing".
+func scanOutput(ctx context.Context, r io.Reader, keep *bytes.Buffer, downloading *atomic.Bool) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 64<<20) // --dump-single-json prints one long line
 	sc.Split(scanLines)
@@ -466,9 +473,12 @@ func scanOutput(ctx context.Context, r io.Reader, keep *bytes.Buffer) {
 			if total == 0 {
 				total = parseCount(parts[2]) // an estimate is better than nothing
 			}
+			downloading.Store(true)
 			downloader.Report(ctx, downloader.Progress{Stage: downloader.StageDownloading, Done: parseCount(parts[0]), Total: total})
 		case strings.HasPrefix(line, processPrefix):
-			downloader.Report(ctx, downloader.Progress{Stage: downloader.StageProcessing})
+			if downloading.Load() {
+				downloader.Report(ctx, downloader.Progress{Stage: downloader.StageProcessing})
+			}
 		default:
 			keep.WriteString(line)
 			keep.WriteByte('\n')
